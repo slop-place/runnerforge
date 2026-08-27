@@ -16,8 +16,10 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -31,6 +33,31 @@ import (
 )
 
 func init() { cloud.Register("docker", New) }
+
+// errNoSocket is returned when no Docker daemon socket can be located.
+var errNoSocket = errors.New("docker: no daemon socket found; set DOCKER_HOST or the socket setting")
+
+// Tunables for the Engine API client and log retrieval.
+const (
+	// apiTimeout bounds a single Engine API call. Image pulls are the slowest
+	// of them, which is why it is generous.
+	apiTimeout = 60 * time.Second
+	// defaultLogTail is how many lines of output are kept when a caller does
+	// not ask for a specific number.
+	defaultLogTail = 200
+	// maxLogBytes caps a single log read so a runaway job cannot exhaust memory.
+	maxLogBytes = 1 << 20
+	// frameHeaderLen is the size of Docker's stream multiplexing header.
+	frameHeaderLen = 8
+	// bytesPerMB converts the size spec's megabytes into bytes.
+	bytesPerMB = 1024 * 1024
+	// nanoCPUsPerCore is the unit HostConfig.NanoCpus is expressed in.
+	nanoCPUsPerCore = 1e9
+	// typicalContainerStart is how long a container usually takes to be usable.
+	typicalContainerStart = 2 * time.Second
+	// httpErrorFloor is the status at or above which a response is a failure.
+	httpErrorFloor = 300
+)
 
 // Driver provisions containers on a Docker daemon.
 type Driver struct {
@@ -49,11 +76,11 @@ func New(cfg map[string]any) (cloud.Provider, error) {
 		sock = socketFromEnv()
 	}
 	if sock == "" {
-		return nil, fmt.Errorf("docker: no daemon socket found; set DOCKER_HOST or the socket setting")
+		return nil, errNoSocket
 	}
 	d := &Driver{host: "http://docker"}
 	d.http = &http.Client{
-		Timeout: 60 * time.Second,
+		Timeout: apiTimeout,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return (&net.Dialer{}).DialContext(ctx, "unix", sock)
@@ -83,8 +110,11 @@ func socketFromEnv() string {
 	return ""
 }
 
+// Name returns the driver name as it appears in configuration.
 func (d *Driver) Name() string { return "docker" }
 
+// Capabilities reports what this driver can and cannot do. Containers start a
+// process directly, so credentials arrive as environment rather than cloud-init.
 func (d *Driver) Capabilities() cloud.Capabilities {
 	return cloud.Capabilities{
 		// Containers start a process directly, so the runner credential arrives
@@ -93,53 +123,8 @@ func (d *Driver) Capabilities() cloud.Capabilities {
 		Tags:           true, // container labels
 		SecurityGroups: false,
 		PublicIPv4:     false,
-		TypicalBoot:    2 * time.Second,
+		TypicalBoot:    typicalContainerStart,
 	}
-}
-
-// ---- Engine API plumbing ----
-
-func (d *Driver) do(ctx context.Context, method, path string, body, out any) error {
-	var rdr io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		rdr = bytes.NewReader(b)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, d.host+path, rdr)
-	if err != nil {
-		return err
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	resp, err := d.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("docker %s %s: %w", method, path, err)
-	}
-	defer resp.Body.Close()
-	data, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode == http.StatusNotFound {
-		return cloud.ErrNotFound
-	}
-	if resp.StatusCode >= 300 {
-		var e struct {
-			Message string `json:"message"`
-		}
-		_ = json.Unmarshal(data, &e)
-		msg := e.Message
-		if msg == "" {
-			msg = strings.TrimSpace(string(data))
-		}
-		return fmt.Errorf("docker %s %s: %s: %s", method, path, resp.Status, msg)
-	}
-	if out != nil && len(data) > 0 {
-		return json.Unmarshal(data, out)
-	}
-	return nil
 }
 
 // ---- provider ----
@@ -164,6 +149,7 @@ type hostConfig struct {
 	ExtraHosts  []string `json:"ExtraHosts,omitempty"`
 }
 
+// Provision creates and starts a container for one job.
 func (d *Driver) Provision(ctx context.Context, req cloud.ProvisionRequest) (*cloud.Instance, error) {
 	// The forge decides which runner image to use, so its choice wins; the
 	// cloud's image catalogue is the fallback for operators who pin one.
@@ -177,12 +163,8 @@ func (d *Driver) Provision(ctx context.Context, req cloud.ProvisionRequest) (*cl
 	}
 
 	labels := map[string]string{}
-	for k, v := range req.Tags {
-		labels[k] = v
-	}
-	for k, v := range req.Owner.Tags() {
-		labels[k] = v // owner keys always win
-	}
+	maps.Copy(labels, req.Tags)
+	maps.Copy(labels, req.Owner.Tags()) // owner keys always win
 	labels[cloud.TagCreatedAt] = time.Now().UTC().Format(time.RFC3339)
 
 	env := make([]string, 0, len(req.Bootstrap.Env))
@@ -243,10 +225,10 @@ func (d *Driver) Provision(ctx context.Context, req cloud.ProvisionRequest) (*cl
 // docker_socket (bind-mounts the daemon socket so jobs can build images).
 func applySize(hc *hostConfig, req cloud.ProvisionRequest) {
 	if f, ok := cloud.SpecFloat(req.SizeSpec, "cpus"); ok && f > 0 {
-		hc.NanoCPUs = int64(f * 1e9)
+		hc.NanoCPUs = int64(f * nanoCPUsPerCore)
 	}
 	if mb, ok := cloud.SpecInt(req.SizeSpec, "memory_mb"); ok && mb > 0 {
-		hc.Memory = mb * 1024 * 1024
+		hc.Memory = mb * bytesPerMB
 	}
 	if cloud.SpecBool(req.SizeSpec, "privileged") {
 		hc.Privileged = true
@@ -259,23 +241,6 @@ func applySize(hc *hostConfig, req cloud.ProvisionRequest) {
 	if net := cloud.SpecString(req.SizeSpec, "network"); net != "" {
 		hc.NetworkMode = net
 	}
-}
-
-func (d *Driver) ensureImage(ctx context.Context, img string) error {
-	err := d.do(ctx, http.MethodGet, "/images/"+url.PathEscape(img)+"/json", nil, nil)
-	if err == nil {
-		return nil
-	}
-	if err != cloud.ErrNotFound {
-		return err
-	}
-	name, tag := img, "latest"
-	if i := strings.LastIndex(img, ":"); i > strings.LastIndex(img, "/") {
-		name, tag = img[:i], img[i+1:]
-	}
-	q := url.Values{"fromImage": {name}, "tag": {tag}}
-	// Pulling streams progress; we only care that it completes.
-	return d.do(ctx, http.MethodPost, "/images/create?"+q.Encode(), nil, nil)
 }
 
 type inspectResp struct {
@@ -296,6 +261,7 @@ type inspectResp struct {
 	} `json:"NetworkSettings"`
 }
 
+// Get reports a container's current state.
 func (d *Driver) Get(ctx context.Context, id string) (*cloud.Instance, error) {
 	var r inspectResp
 	if err := d.do(ctx, http.MethodGet, "/containers/"+id+"/json", nil, &r); err != nil {
@@ -327,10 +293,12 @@ func fromInspect(r *inspectResp) *cloud.Instance {
 	return inst
 }
 
+// Delete removes a container. Removing one that is already gone is success, so
+// that a retried teardown converges instead of wedging.
 func (d *Driver) Delete(ctx context.Context, id string) error {
 	q := url.Values{"force": {"1"}, "v": {"1"}}
 	err := d.do(ctx, http.MethodDelete, "/containers/"+id+"?"+q.Encode(), nil, nil)
-	if err == cloud.ErrNotFound {
+	if errors.Is(err, cloud.ErrNotFound) {
 		// Already gone is success: teardown must converge, not wedge.
 		return nil
 	}
@@ -344,7 +312,7 @@ func (d *Driver) Delete(ctx context.Context, id string) error {
 // with 8-byte headers embedded in the text.
 func (d *Driver) Logs(ctx context.Context, id string, tail int) (string, error) {
 	if tail <= 0 {
-		tail = 200
+		tail = defaultLogTail
 	}
 	q := url.Values{
 		"stdout": {"1"}, "stderr": {"1"},
@@ -353,21 +321,21 @@ func (d *Driver) Logs(ctx context.Context, id string, tail int) (string, error) 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
 		d.host+"/containers/"+id+"/logs?"+q.Encode(), nil)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("docker: build logs request: %w", err)
 	}
 	resp, err := d.http.Do(req)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("docker: fetch logs for %s: %w", id, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotFound {
 		return "", cloud.ErrNotFound
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxLogBytes))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("docker: read logs for %s: %w", id, err)
 	}
-	if resp.StatusCode >= 300 {
+	if resp.StatusCode >= httpErrorFloor {
 		return "", fmt.Errorf("docker: logs %s: %s: %s", id, resp.Status, strings.TrimSpace(string(raw)))
 	}
 	return deframe(raw), nil
@@ -381,16 +349,17 @@ func (d *Driver) Logs(ctx context.Context, id string, tail int) (string, error) 
 // unchanged.
 func deframe(b []byte) string {
 	var out strings.Builder
-	for len(b) >= 8 {
+	for len(b) >= frameHeaderLen {
+		// A valid header is a stream byte of 0, 1 or 2 followed by three zeroes.
 		if b[0] > 2 || b[1] != 0 || b[2] != 0 || b[3] != 0 {
 			return string(b) // not framed
 		}
-		n := int(binary.BigEndian.Uint32(b[4:8]))
-		if n < 0 || 8+n > len(b) {
+		n := int(binary.BigEndian.Uint32(b[4:frameHeaderLen]))
+		if n < 0 || frameHeaderLen+n > len(b) {
 			return string(b)
 		}
-		out.Write(b[8 : 8+n])
-		b = b[8+n:]
+		out.Write(b[frameHeaderLen : frameHeaderLen+n])
+		b = b[frameHeaderLen+n:]
 	}
 	if out.Len() == 0 {
 		return string(b)
@@ -398,6 +367,11 @@ func deframe(b []byte) string {
 	return out.String()
 }
 
+// List returns every container this deployment owns, in any state.
+//
+// This is the reaper's ground truth, so it queries the daemon live and includes
+// exited containers: one that has stopped still holds a name and still needs to
+// be destroyed.
 func (d *Driver) List(ctx context.Context, owner cloud.Owner) ([]*cloud.Instance, error) {
 	filters := map[string][]string{
 		"label": {cloud.TagController + "=" + owner.Controller},
@@ -407,7 +381,7 @@ func (d *Driver) List(ctx context.Context, owner cloud.Owner) ([]*cloud.Instance
 	}
 	fb, err := json.Marshal(filters)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("docker: encode list filters: %w", err)
 	}
 	// all=1 matters: a container that exited still holds a name and still needs
 	// to be destroyed, so it must appear here.
@@ -448,4 +422,68 @@ func (d *Driver) List(ctx context.Context, owner cloud.Owner) ([]*cloud.Instance
 		})
 	}
 	return out, nil
+}
+
+// ---- Engine API plumbing ----
+
+func (d *Driver) do(ctx context.Context, method, path string, body, out any) error {
+	var rdr io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return fmt.Errorf("docker: encode request body: %w", err)
+		}
+		rdr = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, d.host+path, rdr)
+	if err != nil {
+		return fmt.Errorf("docker: build request: %w", err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := d.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("docker %s %s: %w", method, path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	data, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode == http.StatusNotFound {
+		return cloud.ErrNotFound
+	}
+	if resp.StatusCode >= httpErrorFloor {
+		var e struct {
+			Message string `json:"message"`
+		}
+		_ = json.Unmarshal(data, &e)
+		msg := e.Message
+		if msg == "" {
+			msg = strings.TrimSpace(string(data))
+		}
+		return fmt.Errorf("docker %s %s: %s: %s", method, path, resp.Status, msg)
+	}
+	if out != nil && len(data) > 0 {
+		if err := json.Unmarshal(data, out); err != nil {
+			return fmt.Errorf("docker %s %s: decode response: %w", method, path, err)
+		}
+	}
+	return nil
+}
+
+func (d *Driver) ensureImage(ctx context.Context, img string) error {
+	err := d.do(ctx, http.MethodGet, "/images/"+url.PathEscape(img)+"/json", nil, nil)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, cloud.ErrNotFound) {
+		return err
+	}
+	name, tag := img, "latest"
+	if i := strings.LastIndex(img, ":"); i > strings.LastIndex(img, "/") {
+		name, tag = img[:i], img[i+1:]
+	}
+	q := url.Values{"fromImage": {name}, "tag": {tag}}
+	// Pulling streams progress; we only care that it completes.
+	return d.do(ctx, http.MethodPost, "/images/create?"+q.Encode(), nil, nil)
 }

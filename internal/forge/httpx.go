@@ -11,6 +11,15 @@ import (
 	"time"
 )
 
+const (
+	// httpErrorFloor is the status at or above which a response is a failure.
+	httpErrorFloor = 300
+	// bodyExcerpt caps how much of an error body is quoted back.
+	bodyExcerpt = 300
+	// requestTimeout bounds a single call to a forge.
+	requestTimeout = 30 * time.Second
+)
+
 // HTTPError carries a forge's HTTP failure with enough detail to act on.
 type HTTPError struct {
 	Status int
@@ -21,8 +30,8 @@ type HTTPError struct {
 
 func (e *HTTPError) Error() string {
 	b := strings.TrimSpace(e.Body)
-	if len(b) > 300 {
-		b = b[:300] + "…"
+	if len(b) > bodyExcerpt {
+		b = b[:bodyExcerpt] + "…"
 	}
 	return fmt.Sprintf("%s %s: %d: %s", e.Method, e.URL, e.Status, b)
 }
@@ -42,7 +51,7 @@ type Client struct {
 func NewClient(base string, header http.Header) *Client {
 	return &Client{
 		BaseURL: strings.TrimRight(base, "/"),
-		HTTP:    &http.Client{Timeout: 30 * time.Second},
+		HTTP:    &http.Client{Timeout: requestTimeout},
 		Header:  header,
 	}
 }
@@ -54,14 +63,14 @@ func (c *Client) Do(ctx context.Context, method, path string, body, out any) err
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return err
+			return fmt.Errorf("encode request body: %w", err)
 		}
 		rdr = bytes.NewReader(b)
 	}
 	url := c.BaseURL + path
 	req, err := http.NewRequestWithContext(ctx, method, url, rdr)
 	if err != nil {
-		return err
+		return fmt.Errorf("build request: %w", err)
 	}
 	for k, vs := range c.Header {
 		for _, v := range vs {
@@ -77,13 +86,13 @@ func (c *Client) Do(ctx context.Context, method, path string, body, out any) err
 	if err != nil {
 		return fmt.Errorf("%s %s: %w", method, url, err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	data, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode == http.StatusNotFound {
 		return ErrNotFound
 	}
-	if resp.StatusCode >= 300 {
+	if resp.StatusCode >= httpErrorFloor {
 		return &HTTPError{Status: resp.StatusCode, Method: method, URL: url, Body: string(data)}
 	}
 	if out != nil && len(bytes.TrimSpace(data)) > 0 {

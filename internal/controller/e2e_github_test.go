@@ -3,6 +3,7 @@ package controller_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -226,7 +227,7 @@ func (c *githubTestClient) do(ctx context.Context, method, path string, body, ou
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("X-Github-Api-Version", "2022-11-28")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
@@ -271,15 +272,15 @@ func (c *githubTestClient) findRun(ctx context.Context, after time.Time) (int64,
 		}
 		time.Sleep(3 * time.Second)
 	}
-	return 0, fmt.Errorf("no workflow_dispatch run appeared")
+	return 0, errors.New("no workflow_dispatch run appeared")
 }
 
-func (c *githubTestClient) runStatus(ctx context.Context, id int64) (status, conclusion string, err error) {
+func (c *githubTestClient) runStatus(ctx context.Context, id int64) (string, string, error) {
 	var run struct {
 		Status     string `json:"status"`
 		Conclusion string `json:"conclusion"`
 	}
-	err = c.do(ctx, http.MethodGet,
+	err := c.do(ctx, http.MethodGet,
 		fmt.Sprintf("/repos/%s/%s/actions/runs/%d", c.owner, c.repo, id), nil, &run)
 	return run.Status, run.Conclusion, err
 }

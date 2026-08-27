@@ -32,6 +32,17 @@ import (
 // version is set at build time with -ldflags "-X main.version=...".
 var version = "dev"
 
+const (
+	// oneShotTimeout bounds a single `reap` or `destroy-all` invocation.
+	oneShotTimeout = 5 * time.Minute
+	// readHeaderTimeout guards the web listener against slow-header attacks.
+	readHeaderTimeout = 10 * time.Second
+	// shutdownTimeout is how long in-flight web requests get to finish.
+	shutdownTimeout = 10 * time.Second
+	// errBuffer sizes the channel the two long-running goroutines report on.
+	errBuffer = 2
+)
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "runnerforge:", err)
@@ -57,21 +68,21 @@ the key that encrypts credentials at rest.`
 
 func run(args []string) error {
 	if len(args) == 0 {
-		fmt.Println(usage())
+		_, _ = fmt.Fprintln(os.Stdout, usage())
 		return nil
 	}
 	cmd, rest := args[0], args[1:]
 
 	switch cmd {
 	case "version":
-		fmt.Println(version)
+		_, _ = fmt.Fprintln(os.Stdout, version)
 		return nil
 	case "genkey":
 		k, err := config.GenerateSecretKey()
 		if err != nil {
 			return err
 		}
-		fmt.Println(k)
+		_, _ = fmt.Fprintln(os.Stdout, k)
 		return nil
 	case "serve":
 		return serve(rest)
@@ -82,11 +93,11 @@ func run(args []string) error {
 	case "destroy-all":
 		return oneShot(rest, func(ctx context.Context, c *controller.Controller) error {
 			n, err := c.DestroyAll(ctx)
-			fmt.Printf("destroyed %d machine(s)\n", n)
+			_, _ = fmt.Fprintf(os.Stdout, "destroyed %d machine(s)\n", n)
 			return err
 		})
 	case "-h", "--help", "help":
-		fmt.Println(usage())
+		_, _ = fmt.Fprintln(os.Stdout, usage())
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q\n\n%s", cmd, usage())
@@ -99,7 +110,7 @@ func setup(args []string) (*config.Config, *store.DB, *controller.Controller, er
 	path := fs.String("config", "runnerforge.yaml", "path to the bootstrap config file")
 	debug := fs.Bool("debug", false, "enable debug logging")
 	if err := fs.Parse(args); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, fmt.Errorf("parse flags: %w", err)
 	}
 
 	cfg, err := config.Load(*path)
@@ -132,7 +143,7 @@ func oneShot(args []string, fn func(context.Context, *controller.Controller) err
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), oneShotTimeout)
 	defer cancel()
 	return fn(ctx, ctrl)
 }
@@ -150,10 +161,10 @@ func serve(args []string) error {
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           web.New(db, ctrl, cfg, log).Handler(),
-		ReadHeaderTimeout: 10 * time.Second,
+		ReadHeaderTimeout: readHeaderTimeout,
 	}
 
-	errs := make(chan error, 2)
+	errs := make(chan error, errBuffer)
 	go func() {
 		log.Info("web UI listening", "addr", cfg.Listen)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -177,7 +188,10 @@ func serve(args []string) error {
 	// Give in-flight requests a moment, but do not wait on the controller: any
 	// machine it was mid-flight on is the reaper's problem on next startup,
 	// which is exactly what the reaper is for.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	return srv.Shutdown(shutdownCtx)
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("shut down web server: %w", err)
+	}
+	return nil
 }

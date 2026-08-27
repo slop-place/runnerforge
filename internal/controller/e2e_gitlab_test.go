@@ -233,7 +233,7 @@ func (c *gitlabTestClient) do(ctx context.Context, method, path string, body, ou
 	if err != nil {
 		return err
 	}
-	req.Header.Set("PRIVATE-TOKEN", c.token)
+	req.Header.Set("Private-Token", c.token)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

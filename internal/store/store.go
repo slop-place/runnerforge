@@ -6,11 +6,16 @@ import (
 	"fmt"
 	"time"
 
-	"gorm.io/driver/postgres"
 	"github.com/glebarez/sqlite"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
+
+// ErrNotFound is returned by the lookup helpers when a row does not exist.
+// Returning a sentinel rather than a nil value with a nil error keeps callers
+// from having to distinguish "absent" from "zero" by inspection.
+var ErrNotFound = errors.New("record not found")
 
 // DB wraps the GORM handle with the queries the controller and UI need.
 type DB struct {
@@ -25,7 +30,7 @@ func Open(driver, dsn string) (*DB, error) {
 		// _busy_timeout and WAL keep the reconcile loop and the UI from
 		// tripping over each other on a single file.
 		if dsn != ":memory:" {
-			dsn = dsn + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
+			dsn += "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"
 		}
 		dial = sqlite.Open(dsn)
 	case "postgres":
@@ -43,7 +48,7 @@ func Open(driver, dsn string) (*DB, error) {
 		// One writer avoids SQLITE_BUSY under concurrent reconciles.
 		sqlDB, err := db.DB()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("open database handle: %w", err)
 		}
 		sqlDB.SetMaxOpenConns(1)
 	}
@@ -67,24 +72,26 @@ func (d *DB) CloudByID(ctx context.Context, id uint) (*Cloud, error) {
 	var c Cloud
 	err := d.WithContext(ctx).Preload("Sizes").Preload("Images").First(&c, id).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, nil
+		return nil, ErrNotFound
 	}
 	return &c, err
 }
 
 // ---- forges ----
 
+// Forges returns every configured forge connection.
 func (d *DB) Forges(ctx context.Context) ([]Forge, error) {
 	var out []Forge
 	err := d.WithContext(ctx).Order("name").Find(&out).Error
 	return out, err
 }
 
+// ForgeByID returns one forge connection, or ErrNotFound.
 func (d *DB) ForgeByID(ctx context.Context, id uint) (*Forge, error) {
 	var f Forge
 	err := d.WithContext(ctx).First(&f, id).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, nil
+		return nil, ErrNotFound
 	}
 	return &f, err
 }
@@ -120,13 +127,15 @@ func (d *DB) EnabledPools(ctx context.Context) ([]Pool, error) {
 	return out, nil
 }
 
+// PoolByID returns one pool with its forge, cloud, size and image resolved,
+// or ErrNotFound.
 func (d *DB) PoolByID(ctx context.Context, id uint) (*Pool, error) {
 	var p Pool
 	err := d.WithContext(ctx).
 		Preload("Forge").Preload("Cloud").Preload("Size").Preload("Image").
 		First(&p, id).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, nil
+		return nil, ErrNotFound
 	}
 	return &p, err
 }
@@ -158,7 +167,7 @@ func (d *DB) InstanceByName(ctx context.Context, name string) (*Instance, error)
 	var i Instance
 	err := d.WithContext(ctx).Where("name = ?", name).First(&i).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, nil
+		return nil, ErrNotFound
 	}
 	return &i, err
 }
@@ -193,15 +202,18 @@ func (d *DB) SetState(ctx context.Context, inst *Instance, s InstanceState) erro
 		if inst.DestroyedAt == nil {
 			inst.DestroyedAt = &now
 		}
+	case StatePending, StateProvisioning, StateBooting, StateFailed:
+		// No timestamp of their own: these are entry and error states, and
+		// CreatedAt already records when the row appeared.
 	}
 	return d.WithContext(ctx).Save(inst).Error
 }
 
 // ---- events ----
 
-// Log records an audit event. Failures to log are swallowed: an audit write must
-// never be the reason a teardown does not happen.
-func (d *DB) Log(ctx context.Context, level, kind string, poolID, instanceID *uint, format string, a ...any) {
+// Logf records an audit event. Failures to log are swallowed: an audit write
+// must never be the reason a teardown does not happen.
+func (d *DB) Logf(ctx context.Context, level, kind string, poolID, instanceID *uint, format string, a ...any) {
 	e := Event{
 		At: time.Now().UTC(), Level: level, Kind: kind,
 		PoolID: poolID, InstanceID: instanceID,

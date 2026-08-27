@@ -16,9 +16,23 @@ import (
 	"gorm.io/gorm"
 )
 
+// wrapJSON annotates a JSON decoding failure with the package it came from, so
+// a malformed column is traceable without a stack trace.
+func wrapJSON(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("store: decode column: %w", err)
+}
+
 // StringList is a []string stored as a JSON column, for labels and CIDR lists.
+//
+// database/sql interface contract.
+//
+//nolint:recvcheck // Value on the value type, Scan on the pointer: the
 type StringList []string
 
+// Value renders the list as a JSON array for storage.
 func (l StringList) Value() (driver.Value, error) {
 	if l == nil {
 		return "[]", nil
@@ -27,6 +41,7 @@ func (l StringList) Value() (driver.Value, error) {
 	return string(b), err
 }
 
+// Scan parses a stored JSON array.
 func (l *StringList) Scan(v any) error {
 	*l = nil
 	switch t := v.(type) {
@@ -36,12 +51,12 @@ func (l *StringList) Scan(v any) error {
 		if t == "" {
 			return nil
 		}
-		return json.Unmarshal([]byte(t), (*[]string)(l))
+		return wrapJSON(json.Unmarshal([]byte(t), (*[]string)(l)))
 	case []byte:
 		if len(t) == 0 {
 			return nil
 		}
-		return json.Unmarshal(t, (*[]string)(l))
+		return wrapJSON(json.Unmarshal(t, (*[]string)(l)))
 	default:
 		return fmt.Errorf("store: cannot scan %T into StringList", v)
 	}
@@ -49,8 +64,13 @@ func (l *StringList) Scan(v any) error {
 
 // Params is a free-form JSON column used for driver-specific settings that
 // runnerforge itself does not interpret — a flavor id here, a datacenter there.
+//
+// database/sql interface contract.
+//
+//nolint:recvcheck // Value on the value type, Scan on the pointer: the
 type Params map[string]any
 
+// Value renders the params as a JSON object for storage.
 func (p Params) Value() (driver.Value, error) {
 	if p == nil {
 		return "{}", nil
@@ -59,6 +79,7 @@ func (p Params) Value() (driver.Value, error) {
 	return string(b), err
 }
 
+// Scan parses a stored JSON object.
 func (p *Params) Scan(v any) error {
 	*p = Params{}
 	switch t := v.(type) {
@@ -68,12 +89,12 @@ func (p *Params) Scan(v any) error {
 		if t == "" {
 			return nil
 		}
-		return json.Unmarshal([]byte(t), (*map[string]any)(p))
+		return wrapJSON(json.Unmarshal([]byte(t), (*map[string]any)(p)))
 	case []byte:
 		if len(t) == 0 {
 			return nil
 		}
-		return json.Unmarshal(t, (*map[string]any)(p))
+		return wrapJSON(json.Unmarshal(t, (*map[string]any)(p)))
 	default:
 		return fmt.Errorf("store: cannot scan %T into Params", v)
 	}
@@ -247,21 +268,22 @@ func (p *Pool) MaxLifetime() time.Duration {
 type InstanceState string
 
 const (
-	// StatePending: row created, nothing provisioned yet.
+	// StatePending means the row exists but nothing has been provisioned yet.
 	StatePending InstanceState = "pending"
-	// StateProvisioning: forge credential minted, cloud create call issued.
+	// StateProvisioning means the forge credential is minted and the cloud
+	// create call has been issued.
 	StateProvisioning InstanceState = "provisioning"
-	// StateBooting: machine exists, waiting for it to come up and register.
+	// StateBooting means the machine exists and is coming up.
 	StateBooting InstanceState = "booting"
-	// StateIdle: runner registered with the forge, waiting for a job.
+	// StateIdle means the runner has registered and is waiting for a job.
 	StateIdle InstanceState = "idle"
-	// StateBusy: runner has claimed a job.
+	// StateBusy means the runner has claimed a job.
 	StateBusy InstanceState = "busy"
-	// StateDraining: job finished or the machine must go; destroy in progress.
+	// StateDraining means teardown is in progress.
 	StateDraining InstanceState = "draining"
-	// StateDeleted: machine and forge registration are both gone.
+	// StateDeleted means the machine and its registration are both gone.
 	StateDeleted InstanceState = "deleted"
-	// StateFailed: something went wrong. Still requires a destroy, so the
+	// StateFailed means something went wrong. It still owes a destroy, so the
 	// reaper treats it exactly like the live states.
 	StateFailed InstanceState = "failed"
 )

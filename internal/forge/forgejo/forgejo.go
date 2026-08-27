@@ -12,6 +12,7 @@ package forgejo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -22,6 +23,10 @@ import (
 	"github.com/slop-place/runnerforge/internal/cloud"
 	"github.com/slop-place/runnerforge/internal/forge"
 )
+
+// shutdownGraceMinutes is how much slack the machine's own shutdown timer gets
+// beyond the job timeout, so the runner has a chance to exit cleanly first.
+const shutdownGraceMinutes = 5
 
 func init() { forge.Register(forge.KindForgejo, New) }
 
@@ -47,7 +52,7 @@ type Forgejo struct {
 //	url          base URL of the instance as runners will reach it (required)
 //	api_url      base URL as the controller will reach it (default: url)
 //	scope        "admin", "user", "org" or "repo" (default "repo")
-//	owner        owner login, for org and repo scopes
+//	owner        account or organisation login, for org and repo scopes
 //	repo         repository name, for repo scope
 //	token        API token with permission to manage runners (required)
 //	runner_image container image for container-mode clouds
@@ -56,11 +61,11 @@ func New(cfg map[string]any) (forge.Forge, error) {
 
 	base := strings.TrimRight(get("url"), "/")
 	if base == "" {
-		return nil, fmt.Errorf("forgejo: url is required")
+		return nil, errors.New("forgejo: url is required")
 	}
 	token := get("token")
 	if token == "" {
-		return nil, fmt.Errorf("forgejo: token is required")
+		return nil, errors.New("forgejo: token is required")
 	}
 	apiBase := strings.TrimRight(get("api_url"), "/")
 	if apiBase == "" {
@@ -105,12 +110,12 @@ func scopePath(scope, owner, repo string) (string, error) {
 	switch scope {
 	case "", "repo":
 		if owner == "" || repo == "" {
-			return "", fmt.Errorf("forgejo: repo scope requires owner and repo")
+			return "", errors.New("forgejo: repo scope requires owner and repo")
 		}
 		return "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo), nil
 	case "org":
 		if owner == "" {
-			return "", fmt.Errorf("forgejo: org scope requires owner")
+			return "", errors.New("forgejo: org scope requires owner")
 		}
 		return "/orgs/" + url.PathEscape(owner), nil
 	case "user":
@@ -122,7 +127,10 @@ func scopePath(scope, owner, repo string) (string, error) {
 	}
 }
 
-func (f *Forgejo) Name() string     { return f.name }
+// Name returns the operator-assigned name of this connection.
+func (f *Forgejo) Name() string { return f.name }
+
+// Kind identifies which forge this connection talks to.
 func (f *Forgejo) Kind() forge.Kind { return forge.KindForgejo }
 
 // ---- demand ----
@@ -211,7 +219,7 @@ func (f *Forgejo) Deprovision(ctx context.Context, runnerID string) error {
 		return nil
 	}
 	err := f.client.Do(ctx, http.MethodDelete, f.scope+"/actions/runners/"+url.PathEscape(runnerID), nil, nil)
-	if err == forge.ErrNotFound {
+	if errors.Is(err, forge.ErrNotFound) {
 		return nil
 	}
 	return err
@@ -226,6 +234,7 @@ type apiRunner struct {
 	Ephemeral bool     `json:"ephemeral"`
 }
 
+// ListRunners returns the registrations Forgejo currently holds in this scope.
 func (f *Forgejo) ListRunners(ctx context.Context) ([]forge.Runner, error) {
 	var raw []apiRunner
 	if err := f.client.Do(ctx, http.MethodGet, f.scope+"/actions/runners", nil, &raw); err != nil {
@@ -284,9 +293,12 @@ func runnerLabels(labels []string, defaultImage string) []string {
 // DefaultJobImage is the container image jobs run in when a label does not pin one.
 const DefaultJobImage = "node:20-bookworm"
 
-func (f *Forgejo) Bootstrap(cred *forge.Credential, mode cloud.CredentialMode, opts forge.BootstrapOptions) (cloud.Bootstrap, error) {
+// Bootstrap turns a credential into the instructions that launch the runner.
+func (f *Forgejo) Bootstrap(
+	cred *forge.Credential, mode cloud.CredentialMode, opts forge.BootstrapOptions,
+) (cloud.Bootstrap, error) {
 	if cred == nil || cred.UUID == "" || cred.Token == "" {
-		return cloud.Bootstrap{}, fmt.Errorf("forgejo: incomplete credential")
+		return cloud.Bootstrap{}, errors.New("forgejo: incomplete credential")
 	}
 	id, _ := strconv.ParseInt(cred.RunnerID, 10, 64)
 	rf := runnerFile{
@@ -300,7 +312,7 @@ func (f *Forgejo) Bootstrap(cred *forge.Credential, mode cloud.CredentialMode, o
 	}
 	blob, err := json.Marshal(rf)
 	if err != nil {
-		return cloud.Bootstrap{}, err
+		return cloud.Bootstrap{}, fmt.Errorf("forgejo: encode runner file: %w", err)
 	}
 
 	switch mode {
@@ -380,7 +392,7 @@ func (f *Forgejo) cloudInit(runnerFileJSON []byte, opts forge.BootstrapOptions) 
 
 	b.WriteString("runcmd:\n")
 	// Hard ceiling independent of anything the job does.
-	fmt.Fprintf(&b, "  - [ sh, -c, \"shutdown -h +%d\" ]\n", int(timeout.Minutes())+5)
+	fmt.Fprintf(&b, "  - [ sh, -c, \"shutdown -h +%d\" ]\n", int(timeout.Minutes())+shutdownGraceMinutes)
 	b.WriteString("  - [ sh, -c, \"command -v docker >/dev/null 2>&1 || (curl -fsSL https://get.docker.com | sh)\" ]\n")
 	fmt.Fprintf(&b, "  - [ sh, -c, \"cd /opt/runnerforge && timeout %d forgejo-runner one-job %s; poweroff\" ]\n",
 		int(timeout.Seconds()), strings.Join(oneJobArgs(opts), " "))

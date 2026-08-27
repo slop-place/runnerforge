@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -53,7 +54,7 @@ func TestForgejoEndToEnd(t *testing.T) {
 	if err := fj.putWorkflow(ctx, label); err != nil {
 		t.Fatalf("install workflow: %v", err)
 	}
-	runID, err := fj.dispatch(ctx, label)
+	runID, err := fj.dispatch(ctx)
 	if err != nil {
 		t.Fatalf("dispatch workflow: %v", err)
 	}
@@ -372,7 +373,7 @@ jobs:
 	return c.do(ctx, method, path, body, nil)
 }
 
-func (c *forgejoTestClient) dispatch(ctx context.Context, label string) (int64, error) {
+func (c *forgejoTestClient) dispatch(ctx context.Context) (int64, error) {
 	path := fmt.Sprintf("/repos/%s/%s/actions/workflows/e2e.yml/dispatches", c.owner, c.repo)
 	if err := c.do(ctx, http.MethodPost, path, map[string]any{"ref": "main"}, nil); err != nil {
 		return 0, err
@@ -393,7 +394,7 @@ func (c *forgejoTestClient) dispatch(ctx context.Context, label string) (int64, 
 		}
 		time.Sleep(time.Second)
 	}
-	return 0, fmt.Errorf("no workflow run appeared after dispatch")
+	return 0, errors.New("no workflow run appeared after dispatch")
 }
 
 // runStatus returns a run's status.

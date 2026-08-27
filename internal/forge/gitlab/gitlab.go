@@ -22,6 +22,7 @@ package gitlab
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -32,6 +33,10 @@ import (
 	"github.com/slop-place/runnerforge/internal/cloud"
 	"github.com/slop-place/runnerforge/internal/forge"
 )
+
+// shutdownGraceMinutes is how much slack the machine's own shutdown timer gets
+// beyond the job timeout, so the runner has a chance to exit cleanly first.
+const shutdownGraceMinutes = 5
 
 func init() { forge.Register(forge.KindGitLab, New) }
 
@@ -47,6 +52,18 @@ type GitLab struct {
 	jobImage    string
 	untagged    bool
 }
+
+// Runner types, as GitLab names them.
+const (
+	runnerTypeProject  = "project_type"
+	runnerTypeGroup    = "group_type"
+	runnerTypeInstance = "instance_type"
+)
+
+// maxIdleWait caps how long a runner waits for its first job before giving up,
+// so a machine created for a job that was cancelled does not sit idle until the
+// reaper's lifetime ceiling.
+const maxIdleWait = 600
 
 // DefaultRunnerImage is the image used for container-mode clouds.
 const DefaultRunnerImage = "gitlab/gitlab-runner:latest"
@@ -70,7 +87,7 @@ func New(cfg map[string]any) (forge.Forge, error) {
 
 	base := strings.TrimRight(get("url"), "/")
 	if base == "" {
-		return nil, fmt.Errorf("gitlab: url is required")
+		return nil, errors.New("gitlab: url is required")
 	}
 	apiBase := strings.TrimRight(get("api_url"), "/")
 	if apiBase == "" {
@@ -78,7 +95,7 @@ func New(cfg map[string]any) (forge.Forge, error) {
 	}
 	token := get("token")
 	if token == "" {
-		return nil, fmt.Errorf("gitlab: token is required")
+		return nil, errors.New("gitlab: token is required")
 	}
 
 	g := &GitLab{
@@ -102,28 +119,31 @@ func New(cfg map[string]any) (forge.Forge, error) {
 	switch get("scope") {
 	case "", "project":
 		if g.projectID == "" {
-			return nil, fmt.Errorf("gitlab: project scope requires project_id")
+			return nil, errors.New("gitlab: project scope requires project_id")
 		}
-		g.runnerType = "project_type"
+		g.runnerType = runnerTypeProject
 	case "group":
 		if g.groupID == "" {
-			return nil, fmt.Errorf("gitlab: group scope requires group_id")
+			return nil, errors.New("gitlab: group scope requires group_id")
 		}
-		g.runnerType = "group_type"
+		g.runnerType = runnerTypeGroup
 	case "instance":
-		g.runnerType = "instance_type"
+		g.runnerType = runnerTypeInstance
 	default:
 		return nil, fmt.Errorf("gitlab: unknown scope %q (want project, group or instance)", get("scope"))
 	}
 
 	h := http.Header{}
-	h.Set("PRIVATE-TOKEN", token)
+	h.Set("Private-Token", token)
 
 	g.client = forge.NewClient(apiBase+"/api/v4", h)
 	return g, nil
 }
 
-func (g *GitLab) Name() string     { return g.name }
+// Name returns the operator-assigned name of this connection.
+func (g *GitLab) Name() string { return g.name }
+
+// Kind identifies which forge this connection talks to.
 func (g *GitLab) Kind() forge.Kind { return forge.KindGitLab }
 
 // ---- demand ----
@@ -145,7 +165,7 @@ type apiJob struct {
 // job-request endpoint would consume the job it reports, so it cannot be used to
 // observe the queue without also emptying it.
 func (g *GitLab) Demand(ctx context.Context, labels []string) ([]forge.Job, error) {
-	if g.runnerType != "project_type" {
+	if g.runnerType != runnerTypeProject {
 		// Group and instance scope have no cross-project pending-jobs endpoint.
 		// Those deployments need one pool per project, or the webhook path.
 		return nil, nil
@@ -203,12 +223,12 @@ func (g *GitLab) Provision(ctx context.Context, req forge.RunnerRequest) (*forge
 		Description: req.Name,
 		TagList:     req.Labels,
 		RunUntagged: g.untagged,
-		Locked:      g.runnerType == "project_type",
+		Locked:      g.runnerType == runnerTypeProject,
 	}
 	switch g.runnerType {
-	case "project_type":
+	case runnerTypeProject:
 		body.ProjectID = numericOrString(g.projectID)
-	case "group_type":
+	case runnerTypeGroup:
 		body.GroupID = numericOrString(g.groupID)
 	}
 
@@ -232,12 +252,17 @@ func numericOrString(s string) any {
 	return s
 }
 
+// Deprovision deletes a runner registration.
+//
+// Unlike the other two forges this is not optional cleanup: GitLab never removes
+// runners on its own, so a registration left behind is a token that outlives the
+// machine it was minted for.
 func (g *GitLab) Deprovision(ctx context.Context, runnerID string) error {
 	if runnerID == "" {
 		return nil
 	}
 	err := g.client.Do(ctx, http.MethodDelete, "/runners/"+url.PathEscape(runnerID), nil, nil)
-	if err == forge.ErrNotFound {
+	if errors.Is(err, forge.ErrNotFound) {
 		return nil
 	}
 	return err
@@ -259,9 +284,9 @@ type apiRunner struct {
 func (g *GitLab) ListRunners(ctx context.Context) ([]forge.Runner, error) {
 	var path string
 	switch g.runnerType {
-	case "project_type":
+	case runnerTypeProject:
 		path = fmt.Sprintf("/projects/%s/runners?per_page=100", url.PathEscape(g.projectID))
-	case "group_type":
+	case runnerTypeGroup:
 		path = fmt.Sprintf("/groups/%s/runners?per_page=100", url.PathEscape(g.groupID))
 	default:
 		path = "/runners/all?per_page=100"
@@ -285,9 +310,12 @@ func (g *GitLab) ListRunners(ctx context.Context) ([]forge.Runner, error) {
 
 // ---- bootstrap ----
 
-func (g *GitLab) Bootstrap(cred *forge.Credential, mode cloud.CredentialMode, opts forge.BootstrapOptions) (cloud.Bootstrap, error) {
+// Bootstrap turns a credential into the instructions that launch the runner.
+func (g *GitLab) Bootstrap(
+	cred *forge.Credential, mode cloud.CredentialMode, opts forge.BootstrapOptions,
+) (cloud.Bootstrap, error) {
 	if cred == nil || cred.AuthToken == "" {
-		return cloud.Bootstrap{}, fmt.Errorf("gitlab: incomplete credential")
+		return cloud.Bootstrap{}, errors.New("gitlab: incomplete credential")
 	}
 	timeout := opts.JobTimeout
 	if timeout <= 0 {
@@ -297,9 +325,7 @@ func (g *GitLab) Bootstrap(cred *forge.Credential, mode cloud.CredentialMode, op
 	// a machine created for a job that has since been cancelled does not linger
 	// until the reaper's lifetime ceiling.
 	waitFor := int(timeout.Seconds())
-	if waitFor > 600 {
-		waitFor = 600
-	}
+	waitFor = min(waitFor, maxIdleWait)
 
 	switch mode {
 	case cloud.CredentialEnv:
@@ -366,7 +392,7 @@ func (g *GitLab) cloudInit(cred *forge.Credential, opts forge.BootstrapOptions, 
 	}
 
 	b.WriteString("runcmd:\n")
-	fmt.Fprintf(&b, "  - [ sh, -c, \"shutdown -h +%d\" ]\n", int(timeout.Minutes())+5)
+	fmt.Fprintf(&b, "  - [ sh, -c, \"shutdown -h +%d\" ]\n", int(timeout.Minutes())+shutdownGraceMinutes)
 	b.WriteString("  - [ sh, -c, \"command -v docker >/dev/null 2>&1 || (curl -fsSL https://get.docker.com | sh)\" ]\n")
 	b.WriteString("  - [ sh, -c, \"command -v gitlab-runner >/dev/null 2>&1 || " +
 		"(curl -fsSL https://packages.gitlab.com/install/repositories/runner/gitlab-runner/script.deb.sh | bash && " +

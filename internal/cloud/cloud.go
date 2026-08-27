@@ -22,12 +22,19 @@ var ErrNotFound = errors.New("instance not found")
 // own vocabulary onto these; the controller never sees a provider's raw status.
 type State string
 
+// The lifecycle states a machine can be in, as the controller sees them.
 const (
+	// StateCreating means the provider has accepted the create call.
 	StateCreating State = "creating"
-	StateRunning  State = "running"
-	StateStopped  State = "stopped"
-	StateError    State = "error"
-	StateGone     State = "gone"
+	// StateRunning means the machine is up.
+	StateRunning State = "running"
+	// StateStopped means the machine halted, usually by powering itself off
+	// after finishing its job.
+	StateStopped State = "stopped"
+	// StateError means the provider reported a failure.
+	StateError State = "error"
+	// StateGone means the machine no longer exists.
+	StateGone State = "gone"
 )
 
 // Instance is a machine the provider created for us.

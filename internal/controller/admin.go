@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -48,7 +49,7 @@ func (c *Controller) DestroyInstance(ctx context.Context, id uint) error {
 		return nil
 	}
 	pool, err := c.db.PoolByID(ctx, inst.PoolID)
-	if err != nil {
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return err
 	}
 	if pool == nil || pool.Cloud == nil || pool.Forge == nil {
@@ -64,7 +65,7 @@ func (c *Controller) DestroyInstance(ctx context.Context, id uint) error {
 	if err != nil {
 		return err
 	}
-	c.db.Log(ctx, "warn", "destroy", &pool.ID, &inst.ID, "%s destroyed from the UI", inst.Name)
+	c.db.Logf(ctx, "warn", "destroy", &pool.ID, &inst.ID, "%s destroyed from the UI", inst.Name)
 	if err := c.destroy(ctx, prov, fg, &inst); err != nil {
 		return fmt.Errorf("destroy %s: %w", inst.Name, err)
 	}

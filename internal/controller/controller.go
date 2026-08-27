@@ -19,6 +19,17 @@ import (
 	"github.com/slop-place/runnerforge/internal/store"
 )
 
+const (
+	// nameRandomBytes is the entropy in a machine name's suffix. The name is
+	// the reaper's ownership fallback, so it has to be collision-free.
+	nameRandomBytes = 5
+	// maxPoolNameInMachineName keeps generated names within the length limits
+	// every provider imposes.
+	maxPoolNameInMachineName = 24
+	// lowerCaseOffset converts an ASCII upper-case letter to lower case.
+	lowerCaseOffset = 'a' - 'A'
+)
+
 // Controller owns the reconcile and reap loops.
 type Controller struct {
 	db  *store.DB
@@ -63,7 +74,7 @@ func (c *Controller) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return fmt.Errorf("controller stopped: %w", ctx.Err())
 		case <-reconcile.C:
 			if err := c.ReconcileAll(ctx); err != nil {
 				c.log.Error("reconcile failed", "err", err)
@@ -93,7 +104,7 @@ func (c *Controller) ReconcileAll(ctx context.Context) error {
 			// unreachable should not prevent another pool's machines from
 			// being torn down.
 			errs = append(errs, fmt.Errorf("pool %s: %w", p.Name, err))
-			c.db.Log(ctx, "error", "reconcile", &p.ID, nil, "%v", err)
+			c.db.Logf(ctx, "error", "reconcile", &p.ID, nil, "%v", err)
 		}
 	}
 	return errors.Join(errs...)
@@ -138,13 +149,64 @@ func (c *Controller) reconcilePool(ctx context.Context, pool *store.Pool) error 
 	if err != nil {
 		return fmt.Errorf("demand: %w", err)
 	}
-	matching := matchingJobs(jobs, pool.Labels)
 
-	// Machines are bound to a specific job, so demand is measured as the jobs
-	// nothing is working on yet — not the raw queue length. Counting the queue
-	// instead would launch a second machine for a job that already has one.
+	plan := planScale(pool, matchingJobs(jobs, pool.Labels), live)
+	if plan.atCeiling > 0 {
+		c.db.Logf(ctx, "warn", "scale", &pool.ID, nil,
+			"%d job(s) waiting but pool is at its ceiling of %d machines",
+			plan.atCeiling, pool.MaxInstances)
+	}
+	if len(plan.forJobs) == 0 && plan.warm == 0 {
+		return nil
+	}
+
+	c.log.Info("scaling up", "pool", pool.Name,
+		"queued", plan.queued, "uncovered", plan.uncovered,
+		"idle", plan.idle, "launching", len(plan.forJobs), "warm", plan.warm)
+
+	for _, j := range plan.forJobs {
+		if err := c.launch(ctx, pool, prov, fg, j.ID); err != nil {
+			c.db.Logf(ctx, "error", "launch", &pool.ID, nil, "launch failed: %v", err)
+			return err
+		}
+	}
+	for range plan.warm {
+		if err := c.launch(ctx, pool, prov, fg, ""); err != nil {
+			c.db.Logf(ctx, "error", "launch", &pool.ID, nil, "warm launch failed: %v", err)
+			return err
+		}
+	}
+	return nil
+}
+
+// scalePlan is what one reconcile pass decided to do about a pool.
+type scalePlan struct {
+	// forJobs are the jobs to create a machine for, each bound to that job.
+	forJobs []forge.Job
+	// warm is how many unbound machines to add to reach the pool's min_idle.
+	warm int
+
+	// The rest is reporting: what the decision was based on.
+	queued    int
+	uncovered int
+	idle      int
+	// atCeiling is how many jobs had to be left waiting because the pool is
+	// already at max_instances.
+	atCeiling int
+}
+
+// planScale decides how many machines to create, and for which jobs.
+//
+// It is a pure function of the queue and the pool's current machines, which is
+// what makes the scaling rules testable without a cloud or a forge. The rule
+// that matters most: demand is measured as jobs nothing is working on yet, not
+// as queue length, so a second machine is never launched for a job that already
+// has one.
+func planScale(pool *store.Pool, matching []forge.Job, live []store.Instance) scalePlan {
+	plan := scalePlan{queued: len(matching)}
+
 	covered := make(map[string]bool, len(live))
-	var idle, total int
+	var total int
 	for _, in := range live {
 		if in.JobID != "" {
 			covered[in.JobID] = true
@@ -152,11 +214,13 @@ func (c *Controller) reconcilePool(ctx context.Context, pool *store.Pool) error 
 		switch in.State {
 		case store.StatePending, store.StateProvisioning, store.StateBooting, store.StateIdle:
 			if in.JobID == "" {
-				idle++ // an unbound warm machine, able to take anything
+				plan.idle++ // an unbound warm machine, able to take anything
 			}
 			total++
 		case store.StateBusy, store.StateDraining, store.StateFailed:
 			total++
+		case store.StateDeleted:
+			// Holds no resources and is excluded from LiveInstances anyway.
 		}
 	}
 
@@ -166,57 +230,31 @@ func (c *Controller) reconcilePool(ctx context.Context, pool *store.Pool) error 
 			uncovered = append(uncovered, j)
 		}
 	}
+	plan.uncovered = len(uncovered)
 
 	// Warm machines soak up demand before anything new is created.
 	toLaunch := uncovered
-	if idle > 0 {
-		if idle >= len(toLaunch) {
-			toLaunch = nil
-		} else {
-			toLaunch = toLaunch[idle:]
-		}
+	if plan.idle >= len(toLaunch) {
+		toLaunch = nil
+	} else if plan.idle > 0 {
+		toLaunch = toLaunch[plan.idle:]
 	}
 
 	// Never exceed the pool ceiling, which is also the account-quota guard.
-	room := pool.MaxInstances - total
-	if room < 0 {
-		room = 0
-	}
+	room := max(pool.MaxInstances-total, 0)
 	if len(toLaunch) > room {
-		c.db.Log(ctx, "warn", "scale", &pool.ID, nil,
-			"%d job(s) waiting but pool is at its ceiling of %d machines",
-			len(toLaunch), pool.MaxInstances)
+		plan.atCeiling = len(toLaunch) - room
 		toLaunch = toLaunch[:room]
 	}
+	plan.forJobs = toLaunch
 
 	// Top up to min_idle with unbound machines once demand is covered.
-	var warm int
 	if spare := room - len(toLaunch); spare > 0 {
-		if want := pool.MinIdle - idle; want > 0 {
-			warm = min(want, spare)
+		if want := pool.MinIdle - plan.idle; want > 0 {
+			plan.warm = min(want, spare)
 		}
 	}
-
-	if len(toLaunch) == 0 && warm == 0 {
-		return nil
-	}
-	c.log.Info("scaling up", "pool", pool.Name,
-		"queued", len(matching), "uncovered", len(uncovered),
-		"idle", idle, "launching", len(toLaunch), "warm", warm)
-
-	for _, j := range toLaunch {
-		if err := c.launch(ctx, pool, prov, fg, j.ID); err != nil {
-			c.db.Log(ctx, "error", "launch", &pool.ID, nil, "launch failed: %v", err)
-			return err
-		}
-	}
-	for range warm {
-		if err := c.launch(ctx, pool, prov, fg, ""); err != nil {
-			c.db.Log(ctx, "error", "launch", &pool.ID, nil, "warm launch failed: %v", err)
-			return err
-		}
-	}
-	return nil
+	return plan
 }
 
 // matchingJobs returns the jobs this pool's labels can satisfy.
@@ -274,7 +312,7 @@ func (c *Controller) launch(ctx context.Context, pool *store.Pool, prov cloud.Pr
 	fail := func(err error) error {
 		inst.Error = err.Error()
 		_ = c.db.SetState(ctx, inst, store.StateFailed)
-		c.db.Log(ctx, "error", "launch", &pool.ID, &inst.ID, "%v", err)
+		c.db.Logf(ctx, "error", "launch", &pool.ID, &inst.ID, "%v", err)
 		return err
 	}
 
@@ -329,7 +367,7 @@ func (c *Controller) launch(ctx context.Context, pool *store.Pool, prov cloud.Pr
 	if err := c.db.SetState(ctx, inst, store.StateBooting); err != nil {
 		return fail(err)
 	}
-	c.db.Log(ctx, "info", "launch", &pool.ID, &inst.ID,
+	c.db.Logf(ctx, "info", "launch", &pool.ID, &inst.ID,
 		"created %s on %s (%s)", name, pool.Cloud.Name, sizeName(pool))
 	return nil
 }
@@ -368,22 +406,22 @@ func imageSpecOf(i *store.Image) map[string]any {
 // a machine is for, and the random suffix makes the name safe to use as the
 // reaper's ownership fallback when tags are unavailable.
 func instanceName(pool string) (string, error) {
-	b := make([]byte, 5)
+	b := make([]byte, nameRandomBytes)
 	if _, err := rand.Read(b); err != nil {
-		return "", err
+		return "", fmt.Errorf("generate machine name: %w", err)
 	}
 	safe := strings.Map(func(r rune) rune {
 		switch {
 		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
 			return r
 		case r >= 'A' && r <= 'Z':
-			return r + 32
+			return r + lowerCaseOffset
 		default:
 			return '-'
 		}
 	}, pool)
-	if len(safe) > 24 {
-		safe = safe[:24]
+	if len(safe) > maxPoolNameInMachineName {
+		safe = safe[:maxPoolNameInMachineName]
 	}
 	return fmt.Sprintf("rf-%s-%s", strings.Trim(safe, "-"), hex.EncodeToString(b)), nil
 }

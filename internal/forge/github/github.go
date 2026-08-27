@@ -9,6 +9,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -19,6 +20,10 @@ import (
 	"github.com/slop-place/runnerforge/internal/cloud"
 	"github.com/slop-place/runnerforge/internal/forge"
 )
+
+// shutdownGraceMinutes is how much slack the machine's own shutdown timer gets
+// beyond the job timeout, so the runner has a chance to exit cleanly first.
+const shutdownGraceMinutes = 5
 
 func init() { forge.Register(forge.KindGitHub, New) }
 
@@ -54,11 +59,11 @@ func New(cfg map[string]any) (forge.Forge, error) {
 	}
 	token := get("token")
 	if token == "" {
-		return nil, fmt.Errorf("github: token is required")
+		return nil, errors.New("github: token is required")
 	}
 	owner := get("owner")
 	if owner == "" {
-		return nil, fmt.Errorf("github: owner is required")
+		return nil, errors.New("github: owner is required")
 	}
 
 	var scope string
@@ -66,7 +71,7 @@ func New(cfg map[string]any) (forge.Forge, error) {
 	case "", "repo":
 		repo := get("repo")
 		if repo == "" {
-			return nil, fmt.Errorf("github: repo scope requires repo")
+			return nil, errors.New("github: repo scope requires repo")
 		}
 		scope = "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo)
 	case "org":
@@ -92,7 +97,7 @@ func New(cfg map[string]any) (forge.Forge, error) {
 	h := http.Header{}
 	h.Set("Authorization", "Bearer "+token)
 	h.Set("Accept", "application/vnd.github+json")
-	h.Set("X-GitHub-Api-Version", "2022-11-28")
+	h.Set("X-Github-Api-Version", "2022-11-28")
 
 	return &GitHub{
 		name:        get("name"),
@@ -103,7 +108,10 @@ func New(cfg map[string]any) (forge.Forge, error) {
 	}, nil
 }
 
-func (g *GitHub) Name() string     { return g.name }
+// Name returns the operator-assigned name of this connection.
+func (g *GitHub) Name() string { return g.name }
+
+// Kind identifies which forge this connection talks to.
 func (g *GitHub) Kind() forge.Kind { return forge.KindGitHub }
 
 // ---- demand ----
@@ -192,7 +200,7 @@ type jitResp struct {
 func (g *GitHub) Provision(ctx context.Context, req forge.RunnerRequest) (*forge.Credential, error) {
 	labels := req.Labels
 	if len(labels) == 0 {
-		return nil, fmt.Errorf("github: at least one label is required")
+		return nil, errors.New("github: at least one label is required")
 	}
 	var r jitResp
 	err := g.client.Do(ctx, http.MethodPost, g.scope+"/actions/runners/generate-jitconfig", jitReq{
@@ -212,13 +220,15 @@ func (g *GitHub) Provision(ctx context.Context, req forge.RunnerRequest) (*forge
 	}, nil
 }
 
+// Deprovision removes a runner registration. GitHub retires JIT runners itself
+// once they finish a job, so this is only reached for ones that never started.
 func (g *GitHub) Deprovision(ctx context.Context, runnerID string) error {
 	if runnerID == "" {
 		return nil
 	}
 	err := g.client.Do(ctx, http.MethodDelete,
 		g.scope+"/actions/runners/"+url.PathEscape(runnerID), nil, nil)
-	if err == forge.ErrNotFound {
+	if errors.Is(err, forge.ErrNotFound) {
 		return nil
 	}
 	return err
@@ -234,6 +244,7 @@ type apiRunner struct {
 	} `json:"labels"`
 }
 
+// ListRunners returns the registrations GitHub currently holds in this scope.
 func (g *GitHub) ListRunners(ctx context.Context) ([]forge.Runner, error) {
 	var resp struct {
 		Runners []apiRunner `json:"runners"`
@@ -260,9 +271,12 @@ func (g *GitHub) ListRunners(ctx context.Context) ([]forge.Runner, error) {
 
 // ---- bootstrap ----
 
-func (g *GitHub) Bootstrap(cred *forge.Credential, mode cloud.CredentialMode, opts forge.BootstrapOptions) (cloud.Bootstrap, error) {
+// Bootstrap turns a credential into the instructions that launch the runner.
+func (g *GitHub) Bootstrap(
+	cred *forge.Credential, mode cloud.CredentialMode, opts forge.BootstrapOptions,
+) (cloud.Bootstrap, error) {
 	if cred == nil || cred.JITConfig == "" {
-		return cloud.Bootstrap{}, fmt.Errorf("github: incomplete credential")
+		return cloud.Bootstrap{}, errors.New("github: incomplete credential")
 	}
 	switch mode {
 	case cloud.CredentialEnv:
@@ -320,9 +334,10 @@ func (g *GitHub) cloudInit(cred *forge.Credential, opts forge.BootstrapOptions) 
 	}
 
 	b.WriteString("runcmd:\n")
-	fmt.Fprintf(&b, "  - [ sh, -c, \"shutdown -h +%d\" ]\n", int(timeout.Minutes())+5)
+	fmt.Fprintf(&b, "  - [ sh, -c, \"shutdown -h +%d\" ]\n", int(timeout.Minutes())+shutdownGraceMinutes)
 	b.WriteString("  - [ sh, -c, \"command -v docker >/dev/null 2>&1 || (curl -fsSL https://get.docker.com | sh)\" ]\n")
-	fmt.Fprintf(&b, "  - [ sh, -c, \"cd /opt/actions-runner && timeout %d ./run.sh --jitconfig \\\"$(cat /opt/runnerforge/jitconfig)\\\"; poweroff\" ]\n",
-		int(timeout.Seconds()))
+	const runLine = "  - [ sh, -c, \"cd /opt/actions-runner && timeout %d " +
+		"./run.sh --jitconfig \\\"$(cat /opt/runnerforge/jitconfig)\\\"; poweroff\" ]\n"
+	fmt.Fprintf(&b, runLine, int(timeout.Seconds()))
 	return []byte(b.String())
 }

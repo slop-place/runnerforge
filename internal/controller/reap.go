@@ -103,7 +103,7 @@ func (c *Controller) reapMachine(
 	}
 
 	inst, err := c.db.InstanceByName(ctx, m.Name)
-	if err != nil {
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return err
 	}
 
@@ -125,6 +125,15 @@ func (c *Controller) reapMachine(
 			reason = fmt.Sprintf("pool %q no longer exists", pool)
 			break
 		}
+		// A provider that does not report a creation time must not be aged off:
+		// a zero timestamp is infinitely old, and acting on it would destroy
+		// every machine in the account, mid-job. The database's own record is
+		// the fallback, and reconcile enforces the ceiling from there.
+		if m.CreatedAt.IsZero() {
+			c.log.Debug("provider reported no creation time; leaving the age check to reconcile",
+				"cloud", cl.Name, "name", m.Name)
+			break
+		}
 		if age := time.Since(m.CreatedAt); age > lifetime {
 			reason = fmt.Sprintf("exceeded max lifetime (%s old)", age.Round(time.Second))
 		}
@@ -144,7 +153,7 @@ func (c *Controller) reapMachine(
 			_ = c.db.SetState(ctx, inst, store.StateDeleted)
 		}
 	}
-	c.db.Log(ctx, "warn", "reap", nil, instID, "reaped %s from %s: %s", m.Name, cl.Name, reason)
+	c.db.Logf(ctx, "warn", "reap", nil, instID, "reaped %s from %s: %s", m.Name, cl.Name, reason)
 	return nil
 }
 
@@ -178,7 +187,7 @@ func (c *Controller) reapForges(ctx context.Context) error {
 				continue // running a job right now
 			}
 			inst, err := c.db.InstanceByName(ctx, r.Name)
-			if err != nil {
+			if err != nil && !errors.Is(err, store.ErrNotFound) {
 				errs = append(errs, err)
 				continue
 			}
@@ -193,7 +202,7 @@ func (c *Controller) reapForges(ctx context.Context) error {
 				errs = append(errs, fmt.Errorf("forge %s: deprovision %s: %w", f.Name, r.Name, err))
 				continue
 			}
-			c.db.Log(ctx, "warn", "reap", nil, nil,
+			c.db.Logf(ctx, "warn", "reap", nil, nil,
 				"removed orphaned runner registration %s from %s", r.Name, f.Name)
 		}
 	}
@@ -215,7 +224,7 @@ func (c *Controller) reapRows(ctx context.Context) error {
 		if inst.Pool == nil {
 			// Pool deleted underneath it: nothing left to reconcile against.
 			if inst.State != store.StateDeleted {
-				c.db.Log(ctx, "warn", "reap", nil, &inst.ID,
+				c.db.Logf(ctx, "warn", "reap", nil, &inst.ID,
 					"closing out %s: its pool no longer exists", inst.Name)
 				_ = c.db.SetState(ctx, inst, store.StateDeleted)
 			}
@@ -230,7 +239,7 @@ func (c *Controller) reapRows(ctx context.Context) error {
 			continue
 		}
 		pool, err := c.db.PoolByID(ctx, inst.PoolID)
-		if err != nil || pool == nil || pool.Cloud == nil {
+		if err != nil || pool.Cloud == nil {
 			continue
 		}
 		prov, err := c.res.Cloud(pool.Cloud)
@@ -240,7 +249,7 @@ func (c *Controller) reapRows(ctx context.Context) error {
 		}
 		_, err = prov.Get(ctx, inst.ProviderID)
 		if errors.Is(err, cloud.ErrNotFound) {
-			c.db.Log(ctx, "info", "reap", &pool.ID, &inst.ID,
+			c.db.Logf(ctx, "info", "reap", &pool.ID, &inst.ID,
 				"closing out %s: machine no longer exists", inst.Name)
 			_ = c.db.SetState(ctx, inst, store.StateDeleted)
 		}

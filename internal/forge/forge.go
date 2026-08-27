@@ -23,9 +23,13 @@ var ErrNotFound = errors.New("runner not found")
 // Kind identifies a forge implementation.
 type Kind string
 
+// The forges runnerforge can serve.
 const (
-	KindGitHub  Kind = "github"
-	KindGitLab  Kind = "gitlab"
+	// KindGitHub is GitHub Actions, on github.com or GitHub Enterprise Server.
+	KindGitHub Kind = "github"
+	// KindGitLab is GitLab CI, on gitlab.com or a self-managed instance.
+	KindGitLab Kind = "gitlab"
+	// KindForgejo is Forgejo Actions.
 	KindForgejo Kind = "forgejo"
 )
 

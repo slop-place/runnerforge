@@ -11,6 +11,9 @@ import (
 	"fmt"
 )
 
+// keyBytes is the AES-256 key length expected by SetKey.
+const keyBytes = 32
+
 // keyring holds the process-wide encryption key. Credentials for clouds and
 // forges live in the database because the UI manages them, so they are encrypted
 // at rest with a key that lives in the bootstrap config instead.
@@ -19,8 +22,8 @@ var keyring []byte
 // SetKey installs the encryption key. Must be called once before any Secret is
 // read or written.
 func SetKey(k []byte) error {
-	if len(k) != 32 {
-		return fmt.Errorf("key must be 32 bytes, got %d", len(k))
+	if len(k) != keyBytes {
+		return fmt.Errorf("key must be %d bytes, got %d", keyBytes, len(k))
 	}
 	keyring = k
 	return nil
@@ -28,9 +31,13 @@ func SetKey(k []byte) error {
 
 // Secret is a map of credentials stored encrypted in a single column.
 //
+// the pointer; the mixed receivers are the interface contract, not an oversight.
+//
 // It behaves like a normal Go map in memory and as an opaque base64 blob in the
 // database, so a leaked database dump does not leak API tokens. The values are
 // only ever decrypted in-process.
+//
+//nolint:recvcheck // database/sql requires Value on the value type and Scan on
 type Secret map[string]string
 
 // Value encrypts the map for storage.
@@ -43,19 +50,19 @@ func (s Secret) Value() (driver.Value, error) {
 	}
 	plain, err := json.Marshal(map[string]string(s))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("store: encode secret: %w", err)
 	}
 	block, err := aes.NewCipher(keyring)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("store: build cipher: %w", err)
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("store: build GCM: %w", err)
 	}
 	nonce := make([]byte, gcm.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("store: generate nonce: %w", err)
 	}
 	// Nonce is prefixed to the ciphertext so each row carries its own.
 	sealed := gcm.Seal(nonce, nonce, plain, nil)
@@ -88,11 +95,11 @@ func (s *Secret) Scan(v any) error {
 	}
 	block, err := aes.NewCipher(keyring)
 	if err != nil {
-		return err
+		return fmt.Errorf("store: build cipher: %w", err)
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return err
+		return fmt.Errorf("store: build GCM: %w", err)
 	}
 	if len(sealed) < gcm.NonceSize() {
 		return errors.New("store: secret ciphertext is too short")
@@ -104,7 +111,10 @@ func (s *Secret) Scan(v any) error {
 		// because the fix is different.
 		return fmt.Errorf("store: cannot decrypt secret (wrong secret_key?): %w", err)
 	}
-	return json.Unmarshal(plain, (*map[string]string)(s))
+	if err := json.Unmarshal(plain, (*map[string]string)(s)); err != nil {
+		return fmt.Errorf("store: decode secret: %w", err)
+	}
+	return nil
 }
 
 // Redacted returns the secret's keys with values masked, for display and logs.

@@ -2,7 +2,9 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"sync"
 
 	"github.com/slop-place/runnerforge/internal/cloud"
@@ -34,7 +36,7 @@ func cacheKey(id uint, rev any) string { return fmt.Sprintf("%d/%v", id, rev) }
 // Cloud returns a provider for the given record, building it if needed.
 func (r *resolver) Cloud(c *store.Cloud) (cloud.Provider, error) {
 	if c == nil {
-		return nil, fmt.Errorf("resolve: nil cloud")
+		return nil, errors.New("resolve: nil cloud")
 	}
 	key := cacheKey(c.ID, c.UpdatedAt.UnixNano())
 	r.mu.Lock()
@@ -56,7 +58,7 @@ func (r *resolver) Cloud(c *store.Cloud) (cloud.Provider, error) {
 // Forge returns a forge client for the given record, building it if needed.
 func (r *resolver) Forge(f *store.Forge) (forge.Forge, error) {
 	if f == nil {
-		return nil, fmt.Errorf("resolve: nil forge")
+		return nil, errors.New("resolve: nil forge")
 	}
 	key := cacheKey(f.ID, f.UpdatedAt.UnixNano())
 	r.mu.Lock()
@@ -91,9 +93,9 @@ func (r *resolver) prune[T any](m map[string]T, id uint) {
 // so a stale plaintext setting can never shadow a real secret.
 func mergeSettings(settings store.Params, creds store.Secret) map[string]any {
 	out := map[string]any{}
-	for k, v := range settings {
-		out[k] = v
-	}
+	maps.Copy(out, settings)
+	// Credentials win on conflict, so a stale plaintext setting can never
+	// shadow a real secret.
 	for k, v := range creds {
 		out[k] = v
 	}

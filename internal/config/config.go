@@ -52,6 +52,9 @@ type Database struct {
 	DSN    string `yaml:"dsn"`
 }
 
+// secretKeyBytes is the AES-256 key length the secret key must decode to.
+const secretKeyBytes = 32
+
 // Defaults.
 const (
 	DefaultListen            = ":8080"
@@ -62,9 +65,11 @@ const (
 // Load reads and validates the bootstrap file. ${VAR} references are expanded
 // from the environment so secrets need not be written into the file.
 func Load(path string) (*Config, error) {
-	raw, err := os.ReadFile(path)
+	// The path comes from the operator's own command line, which is the whole
+	// point of a config flag.
+	raw, err := os.ReadFile(path) //nolint:gosec // operator-supplied config path
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
 	expanded := os.Expand(string(raw), func(k string) string {
 		if k == "$" {
@@ -81,24 +86,6 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	return &c, nil
-}
-
-func (c *Config) applyDefaults() {
-	if c.Listen == "" {
-		c.Listen = DefaultListen
-	}
-	if c.ReconcileInterval == 0 {
-		c.ReconcileInterval = DefaultReconcileInterval
-	}
-	if c.ReapInterval == 0 {
-		c.ReapInterval = DefaultReapInterval
-	}
-	if c.Database.Driver == "" {
-		c.Database.Driver = "sqlite"
-	}
-	if c.Database.DSN == "" {
-		c.Database.DSN = "runnerforge.db"
-	}
 }
 
 // Validate checks the bootstrap settings.
@@ -127,17 +114,35 @@ func (c *Config) Key() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("secret_key is not valid hex: %w", err)
 	}
-	if len(k) != 32 {
-		return nil, fmt.Errorf("secret_key must decode to 32 bytes, got %d", len(k))
+	if len(k) != secretKeyBytes {
+		return nil, fmt.Errorf("secret_key must decode to %d bytes, got %d", secretKeyBytes, len(k))
 	}
 	return k, nil
 }
 
 // GenerateSecretKey returns a new random key as hex.
 func GenerateSecretKey() (string, error) {
-	b := make([]byte, 32)
+	b := make([]byte, secretKeyBytes)
 	if _, err := rand.Read(b); err != nil {
-		return "", err
+		return "", fmt.Errorf("generate secret key: %w", err)
 	}
 	return hex.EncodeToString(b), nil
+}
+
+func (c *Config) applyDefaults() {
+	if c.Listen == "" {
+		c.Listen = DefaultListen
+	}
+	if c.ReconcileInterval == 0 {
+		c.ReconcileInterval = DefaultReconcileInterval
+	}
+	if c.ReapInterval == 0 {
+		c.ReapInterval = DefaultReapInterval
+	}
+	if c.Database.Driver == "" {
+		c.Database.Driver = "sqlite"
+	}
+	if c.Database.DSN == "" {
+		c.Database.DSN = "runnerforge.db"
+	}
 }

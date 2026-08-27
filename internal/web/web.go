@@ -11,10 +11,12 @@ import (
 	"context"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -48,6 +50,20 @@ func New(db *store.DB, ctrl *controller.Controller, cfg *config.Config, log *slo
 	return s
 }
 
+const (
+	// checkTimeout bounds a credential check triggered from the UI.
+	checkTimeout = 30 * time.Second
+	// destroyTimeout bounds a single machine teardown triggered from the UI.
+	destroyTimeout = 60 * time.Second
+	// reapTimeout bounds a manual reap triggered from the UI.
+	reapTimeout = 2 * time.Minute
+	// listLimit is how many rows the machine and event tables show.
+	listLimit = 50
+	// secondsPerMinute and minutesPerHour format ages in the tables.
+	secondsPerMinute = 60
+	minutesPerHour   = 60
+)
+
 // funcs are the helpers templates rely on for formatting.
 var funcs = template.FuncMap{
 	"age": func(t time.Time) string {
@@ -58,10 +74,12 @@ var funcs = template.FuncMap{
 		case d < time.Hour:
 			return fmt.Sprintf("%dm", int(d.Minutes()))
 		default:
-			return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+			return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%minutesPerHour)
 		}
 	},
-	"ts":     func(t time.Time) string { return t.Local().Format("15:04:05") },
+	// Timestamps are rendered in the server's local zone on purpose: this is an
+	// operator console, and an operator reads it alongside their own clock.
+	"ts":     func(t time.Time) string { return t.Local().Format("15:04:05") }, //nolint:gosmopolitan // operator-facing local time
 	"labels": func(l store.StringList) string { return strings.Join(l, ",") },
 	"specjson": func(p store.Params) string {
 		b, err := json.Marshal(p)
@@ -215,13 +233,37 @@ func (s *Server) renderPartial(w http.ResponseWriter, name string, v view) {
 
 // fail redirects back with an error message. Configuration mistakes are the
 // common case here, so they are surfaced in the UI rather than logged and lost.
+//
+// The destination is rebuilt rather than concatenated: `to` is always a path
+// this package chose, and the message is carried as a properly escaped query
+// value, so neither can steer the redirect somewhere else.
 func (s *Server) fail(w http.ResponseWriter, r *http.Request, to string, err error) {
 	s.log.Warn("request failed", "path", r.URL.Path, "err", err)
-	http.Redirect(w, r, to+"?err="+url_QueryEscape(err.Error()), http.StatusSeeOther)
+	s.redirect(w, r, to, "err", err.Error())
 }
 
-func url_QueryEscape(s string) string {
-	return strings.NewReplacer("&", "%26", "#", "%23", "?", "%3F", " ", "%20").Replace(s)
+// redirect sends the client to a path chosen by this package.
+//
+// Every redirect in this file goes through here so there is exactly one place
+// where a destination is built, and it can never be anything but a plain
+// absolute path on this server.
+func (s *Server) redirect(w http.ResponseWriter, r *http.Request, path, key, value string) {
+	//nolint:gosec // G710: internalRedirect rejects anything that is not a
+	// same-origin absolute path, and the message is an escaped query value.
+	http.Redirect(w, r, internalRedirect(path, key, value), http.StatusSeeOther)
+}
+
+// internalRedirect builds a same-origin redirect target, rejecting anything
+// that is not a plain absolute path on this server.
+func internalRedirect(path, key, value string) string {
+	if !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") {
+		path = "/"
+	}
+	u := &url.URL{Path: path}
+	if key != "" {
+		u.RawQuery = url.Values{key: {value}}.Encode()
+	}
+	return u.String()
 }
 
 func (s *Server) base(r *http.Request, title, nav string) view {
@@ -259,6 +301,9 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 			v.Stats.Busy++
 		case store.StateFailed:
 			v.Stats.Failed++
+		case store.StatePending, store.StateProvisioning, store.StateBooting,
+			store.StateIdle, store.StateDraining, store.StateDeleted:
+			// Counted in Live above; no separate tile of their own.
 		}
 	}
 	s.render(w, "dashboard", v)
@@ -301,12 +346,12 @@ func (s *Server) createCloud(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, "/clouds", err)
 		return
 	}
-	http.Redirect(w, r, fmt.Sprintf("/clouds/%d", c.ID), http.StatusSeeOther)
+	http.Redirect(w, r, internalRedirect(fmt.Sprintf("/clouds/%d", c.ID), "", ""), http.StatusSeeOther)
 }
 
 func (s *Server) editCloud(w http.ResponseWriter, r *http.Request) {
 	c, err := s.db.CloudByID(r.Context(), pathID(r))
-	if err != nil || c == nil {
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -321,7 +366,7 @@ func (s *Server) editCloud(w http.ResponseWriter, r *http.Request) {
 func (s *Server) updateCloud(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	c, err := s.db.CloudByID(ctx, pathID(r))
-	if err != nil || c == nil {
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -348,7 +393,7 @@ func (s *Server) updateCloud(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, self, err)
 		return
 	}
-	http.Redirect(w, r, self+"?ok=saved", http.StatusSeeOther)
+	s.redirect(w, r, self, "ok", "saved")
 }
 
 func (s *Server) deleteCloud(w http.ResponseWriter, r *http.Request) {
@@ -365,19 +410,19 @@ func (s *Server) deleteCloud(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, "/clouds", err)
 		return
 	}
-	http.Redirect(w, r, "/clouds?ok=deleted", http.StatusSeeOther)
+	s.redirect(w, r, "/clouds", "ok", "deleted")
 }
 
 func (s *Server) checkCloud(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), checkTimeout)
 	defer cancel()
 	c, err := s.db.CloudByID(ctx, pathID(r))
-	if err != nil || c == nil {
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
 	s.ctrl.CheckCloud(ctx, c)
-	http.Redirect(w, r, "/clouds", http.StatusSeeOther)
+	s.redirect(w, r, "/clouds", "", "")
 }
 
 func (s *Server) createSize(w http.ResponseWriter, r *http.Request) {
@@ -398,7 +443,7 @@ func (s *Server) createSize(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, self, err)
 		return
 	}
-	http.Redirect(w, r, self, http.StatusSeeOther)
+	s.redirect(w, r, self, "", "")
 }
 
 func (s *Server) createImage(w http.ResponseWriter, r *http.Request) {
@@ -418,7 +463,7 @@ func (s *Server) createImage(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, self, err)
 		return
 	}
-	http.Redirect(w, r, self, http.StatusSeeOther)
+	s.redirect(w, r, self, "", "")
 }
 
 func (s *Server) deleteSize(w http.ResponseWriter, r *http.Request) {
@@ -462,12 +507,12 @@ func (s *Server) createForge(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, "/forges", err)
 		return
 	}
-	http.Redirect(w, r, fmt.Sprintf("/forges/%d", f.ID), http.StatusSeeOther)
+	http.Redirect(w, r, internalRedirect(fmt.Sprintf("/forges/%d", f.ID), "", ""), http.StatusSeeOther)
 }
 
 func (s *Server) editForge(w http.ResponseWriter, r *http.Request) {
 	f, err := s.db.ForgeByID(r.Context(), pathID(r))
-	if err != nil || f == nil {
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -486,7 +531,7 @@ func (s *Server) editForge(w http.ResponseWriter, r *http.Request) {
 func (s *Server) updateForge(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	f, err := s.db.ForgeByID(ctx, pathID(r))
-	if err != nil || f == nil {
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -514,7 +559,7 @@ func (s *Server) updateForge(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, self, err)
 		return
 	}
-	http.Redirect(w, r, self+"?ok=saved", http.StatusSeeOther)
+	s.redirect(w, r, self, "ok", "saved")
 }
 
 func (s *Server) deleteForge(w http.ResponseWriter, r *http.Request) {
@@ -529,19 +574,19 @@ func (s *Server) deleteForge(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, "/forges", err)
 		return
 	}
-	http.Redirect(w, r, "/forges?ok=deleted", http.StatusSeeOther)
+	s.redirect(w, r, "/forges", "ok", "deleted")
 }
 
 func (s *Server) checkForge(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), checkTimeout)
 	defer cancel()
 	f, err := s.db.ForgeByID(ctx, pathID(r))
-	if err != nil || f == nil {
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
 	s.ctrl.CheckForge(ctx, f)
-	http.Redirect(w, r, "/forges", http.StatusSeeOther)
+	s.redirect(w, r, "/forges", "", "")
 }
 
 // ---- pools ----
@@ -591,12 +636,12 @@ func (s *Server) createPool(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, "/pools", err)
 		return
 	}
-	http.Redirect(w, r, "/pools?ok=created", http.StatusSeeOther)
+	s.redirect(w, r, "/pools", "ok", "created")
 }
 
 func (s *Server) editPool(w http.ResponseWriter, r *http.Request) {
 	p, err := s.db.PoolByID(r.Context(), pathID(r))
-	if err != nil || p == nil {
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -608,7 +653,7 @@ func (s *Server) editPool(w http.ResponseWriter, r *http.Request) {
 func (s *Server) updatePool(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	p, err := s.db.PoolByID(ctx, pathID(r))
-	if err != nil || p == nil {
+	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -630,7 +675,7 @@ func (s *Server) updatePool(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, self, err)
 		return
 	}
-	http.Redirect(w, r, self+"?ok=saved", http.StatusSeeOther)
+	s.redirect(w, r, self, "ok", "saved")
 }
 
 func (s *Server) deletePool(w http.ResponseWriter, r *http.Request) {
@@ -648,7 +693,7 @@ func (s *Server) deletePool(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, "/pools", err)
 		return
 	}
-	http.Redirect(w, r, "/pools?ok=deleted", http.StatusSeeOther)
+	s.redirect(w, r, "/pools", "ok", "deleted")
 }
 
 // validatePool catches the configuration mistakes that would otherwise surface
@@ -656,17 +701,17 @@ func (s *Server) deletePool(w http.ResponseWriter, r *http.Request) {
 func validatePool(p *store.Pool) error {
 	switch {
 	case p.Name == "":
-		return fmt.Errorf("name is required")
+		return errors.New("name is required")
 	case p.ForgeID == 0:
-		return fmt.Errorf("a forge is required")
+		return errors.New("a forge is required")
 	case p.CloudID == 0:
-		return fmt.Errorf("a cloud is required")
+		return errors.New("a cloud is required")
 	case p.SizeID == 0:
-		return fmt.Errorf("a size is required; add one to the cloud first")
+		return errors.New("a size is required; add one to the cloud first")
 	case len(p.Labels) == 0:
-		return fmt.Errorf("at least one label is required, or no job can select this pool")
+		return errors.New("at least one label is required, or no job can select this pool")
 	case p.MaxInstances < 1:
-		return fmt.Errorf("max machines must be at least 1")
+		return errors.New("max machines must be at least 1")
 	case p.MinIdle > p.MaxInstances:
 		return fmt.Errorf("min idle (%d) cannot exceed max machines (%d)", p.MinIdle, p.MaxInstances)
 	case p.MaxLifetimeSec <= p.JobTimeoutSec:
@@ -695,7 +740,7 @@ func (s *Server) instance(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) destroyInstance(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), destroyTimeout)
 	defer cancel()
 	if err := s.ctrl.DestroyInstance(ctx, pathID(r)); err != nil {
 		s.log.Error("destroy instance", "err", err)
@@ -710,7 +755,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) reap(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	ctx, cancel := context.WithTimeout(r.Context(), reapTimeout)
 	defer cancel()
 	if err := s.ctrl.Reap(ctx); err != nil {
 		s.log.Error("manual reap", "err", err)
@@ -736,7 +781,7 @@ func (s *Server) partialPools(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) partialInstances(w http.ResponseWriter, r *http.Request) {
-	insts, err := s.db.RecentInstances(r.Context(), 50)
+	insts, err := s.db.RecentInstances(r.Context(), listLimit)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -745,7 +790,7 @@ func (s *Server) partialInstances(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) partialEvents(w http.ResponseWriter, r *http.Request) {
-	evs, err := s.db.Events(r.Context(), 50)
+	evs, err := s.db.Events(r.Context(), listLimit)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -758,7 +803,7 @@ func (s *Server) partialEvents(w http.ResponseWriter, r *http.Request) {
 func (s *Server) partialCloudOptions(w http.ResponseWriter, r *http.Request) {
 	id := uint(atoi(r.URL.Query().Get("cloud_id")))
 	c, err := s.db.CloudByID(r.Context(), id)
-	if err != nil || c == nil {
+	if err != nil {
 		s.renderPartial(w, "cloud-options", view{})
 		return
 	}
@@ -779,7 +824,7 @@ func atoi(s string) int {
 
 func splitLabels(s string) store.StringList {
 	var out store.StringList
-	for _, p := range strings.Split(s, ",") {
+	for p := range strings.SplitSeq(s, ",") {
 		if p = strings.TrimSpace(p); p != "" {
 			out = append(out, p)
 		}

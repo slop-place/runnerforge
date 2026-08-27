@@ -12,6 +12,14 @@ import (
 	"github.com/slop-place/runnerforge/internal/store"
 )
 
+const (
+	// eventLogLines is how many lines of a failed machine's output are quoted
+	// into an event message.
+	eventLogLines = 6
+	// capturedLogLines is how many lines are fetched from a provider.
+	capturedLogLines = 200
+)
+
 // runnerSnapshot is one reading of a forge's runner registrations.
 //
 // The ok field is load-bearing. A runner vanishing from the forge is how
@@ -24,9 +32,9 @@ type runnerSnapshot struct {
 	ok   bool
 }
 
-// has reports whether a registration is still present. The second return value
-// is false when the snapshot is untrustworthy and the caller must not act.
-func (s runnerSnapshot) has(id string) (present, trustworthy bool) {
+// has reports whether a registration is still present. The second result is
+// false when the snapshot is untrustworthy and the caller must not act on it.
+func (s runnerSnapshot) has(id string) (bool, bool) {
 	if !s.ok {
 		return false, false
 	}
@@ -61,7 +69,7 @@ func (c *Controller) advance(
 	// The hard ceiling comes first and is checked against nothing but the
 	// clock, so that a machine stuck in any state still goes away.
 	if age := time.Since(inst.CreatedAt); age > pool.MaxLifetime() {
-		c.db.Log(ctx, "warn", "reap", &pool.ID, &inst.ID,
+		c.db.Logf(ctx, "warn", "reap", &pool.ID, &inst.ID,
 			"destroying %s: exceeded max lifetime (%s old)", inst.Name, age.Round(time.Second))
 		return c.destroy(ctx, prov, fg, inst)
 	}
@@ -79,7 +87,7 @@ func (c *Controller) advance(
 	case errors.Is(err, cloud.ErrNotFound):
 		// The machine is gone from the cloud. Whatever removed it, we still owe
 		// the forge a cleanup for the registration it was carrying.
-		c.db.Log(ctx, "info", "lifecycle", &pool.ID, &inst.ID,
+		c.db.Logf(ctx, "info", "lifecycle", &pool.ID, &inst.ID,
 			"%s no longer exists at the provider", inst.Name)
 		return c.destroy(ctx, prov, fg, inst)
 	case err != nil:
@@ -97,7 +105,7 @@ func (c *Controller) advance(
 	case cloud.StateError:
 		inst.Error = got.Err
 		c.captureLogs(ctx, prov, inst)
-		c.db.Log(ctx, "error", "lifecycle", &pool.ID, &inst.ID,
+		c.db.Logf(ctx, "error", "lifecycle", &pool.ID, &inst.ID,
 			"%s failed at the provider: %s", inst.Name, got.Err)
 		return c.destroy(ctx, prov, fg, inst)
 
@@ -116,17 +124,20 @@ func (c *Controller) advance(
 			claimed = true
 		}
 		if !claimed {
-			c.db.Log(ctx, "warn", "lifecycle", &pool.ID, &inst.ID,
+			c.db.Logf(ctx, "warn", "lifecycle", &pool.ID, &inst.ID,
 				"%s stopped without ever claiming a job; output: %s",
-				inst.Name, firstLines(inst.Logs, 6))
+				inst.Name, firstLines(inst.Logs, eventLogLines))
 		} else {
-			c.db.Log(ctx, "info", "lifecycle", &pool.ID, &inst.ID,
+			c.db.Logf(ctx, "info", "lifecycle", &pool.ID, &inst.ID,
 				"%s stopped; tearing down", inst.Name)
 		}
 		return c.destroy(ctx, prov, fg, inst)
 
 	case cloud.StateRunning, cloud.StateCreating:
 		return c.advanceRunning(ctx, pool, prov, fg, snap, inst)
+	case cloud.StateGone:
+		// Reported gone rather than absent; same obligation either way.
+		return c.destroy(ctx, prov, fg, inst)
 	}
 	return nil
 }
@@ -161,7 +172,7 @@ func (c *Controller) advanceRunning(
 		if inst.ReadyAt == nil && inst.ClaimedAt == nil {
 			return c.db.WithContext(ctx).Save(inst).Error
 		}
-		c.db.Log(ctx, "info", "lifecycle", &pool.ID, &inst.ID,
+		c.db.Logf(ctx, "info", "lifecycle", &pool.ID, &inst.ID,
 			"%s finished its job; tearing down", inst.Name)
 		return c.destroy(ctx, prov, fg, inst)
 	}
@@ -187,7 +198,7 @@ func (c *Controller) captureLogs(ctx context.Context, prov cloud.Provider, inst 
 	if !ok || inst.ProviderID == "" {
 		return
 	}
-	out, err := lp.Logs(ctx, inst.ProviderID, 200)
+	out, err := lp.Logs(ctx, inst.ProviderID, capturedLogLines)
 	if err != nil {
 		c.log.Debug("could not capture logs", "instance", inst.Name, "err", err)
 		return
