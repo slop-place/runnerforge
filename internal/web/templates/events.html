@@ -1,0 +1,6 @@
+{{define "content"}}
+<h1>Events</h1>
+<div hx-get="/partials/events" hx-trigger="load, every 5s" hx-swap="innerHTML">
+  <p class="muted">loading…</p>
+</div>
+{{end}}

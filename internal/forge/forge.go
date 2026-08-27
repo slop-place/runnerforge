@@ -142,6 +142,10 @@ type BootstrapOptions struct {
 	JobTimeout time.Duration
 	// ContainerImage is the runner image for container-mode providers.
 	ContainerImage string
+	// Network is the container network the runner is attached to. Runners that
+	// start job containers of their own must place them on the same network, or
+	// the job cannot reach the forge to clone from it.
+	Network string
 }
 
 // Registry maps forge kinds to constructors.

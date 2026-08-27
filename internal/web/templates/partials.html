@@ -1,0 +1,69 @@
+{{define "pools-table"}}
+{{if not .Pools}}
+  <p class="empty">No pools yet. <a href="/pools/new">Create one</a> to start serving jobs.</p>
+{{else}}
+<table>
+  <thead><tr><th>Pool</th><th>Forge</th><th>Cloud</th><th>Size</th><th>Labels</th><th>Machines</th><th></th></tr></thead>
+  <tbody>
+  {{range .Pools}}
+    <tr class="{{if not .Pool.Enabled}}off{{end}}">
+      <td><a href="/pools/{{.Pool.ID}}">{{.Pool.Name}}</a>{{if not .Pool.Enabled}} <span class="tag">disabled</span>{{end}}</td>
+      <td>{{if .Pool.Forge}}{{.Pool.Forge.Name}} <span class="tag">{{.Pool.Forge.Kind}}</span>{{end}}</td>
+      <td>{{if .Pool.Cloud}}{{.Pool.Cloud.Name}} <span class="tag">{{.Pool.Cloud.Driver}}</span>{{end}}</td>
+      <td>{{if .Pool.Size}}{{.Pool.Size.Name}}{{end}}</td>
+      <td>{{range .Pool.Labels}}<span class="tag">{{.}}</span> {{end}}</td>
+      <td>{{.Live}} / {{.Pool.MaxInstances}}{{if .Pool.MinIdle}} <span class="muted">(min {{.Pool.MinIdle}})</span>{{end}}</td>
+      <td class="right"><a class="ghost" href="/pools/{{.Pool.ID}}">edit</a></td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+{{end}}
+
+{{define "instances-table"}}
+{{if not .Instances}}
+  <p class="empty">No machines. They appear here the moment a job is queued.</p>
+{{else}}
+<table>
+  <thead><tr><th>Machine</th><th>Pool</th><th>State</th><th>Job</th><th>Age</th><th></th></tr></thead>
+  <tbody>
+  {{range .Instances}}
+    <tr>
+      <td><code>{{.Name}}</code></td>
+      <td>{{if .Pool}}{{.Pool.Name}}{{end}}</td>
+      <td><span class="state {{.State}}">{{.State}}</span></td>
+      <td>{{if .JobID}}<code class="dim">{{.JobID}}</code>{{else}}<span class="muted">unbound</span>{{end}}</td>
+      <td>{{age .CreatedAt}}</td>
+      <td class="right">
+        {{if ne .State "deleted"}}
+        <form hx-post="/instances/{{.ID}}/destroy" hx-swap="none" class="inline">
+          <button class="ghost danger">destroy</button>
+        </form>
+        {{end}}
+        {{if .Logs}}<a class="ghost" href="/instances/{{.ID}}">logs</a>{{end}}
+      </td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+{{end}}
+
+{{define "events-table"}}
+{{if not .Events}}
+  <p class="empty">Nothing has happened yet.</p>
+{{else}}
+<table class="events">
+  <tbody>
+  {{range .Events}}
+    <tr class="lvl-{{.Level}}">
+      <td class="ts">{{ts .At}}</td>
+      <td class="kind">{{.Kind}}</td>
+      <td>{{.Message}}</td>
+    </tr>
+  {{end}}
+  </tbody>
+</table>
+{{end}}
+{{end}}

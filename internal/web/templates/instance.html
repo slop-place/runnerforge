@@ -1,0 +1,19 @@
+{{define "content"}}
+<h1><code>{{.Instance.Name}}</code></h1>
+<dl class="kv">
+  <dt>State</dt><dd><span class="state {{.Instance.State}}">{{.Instance.State}}</span></dd>
+  <dt>Pool</dt><dd>{{if .Instance.Pool}}{{.Instance.Pool.Name}}{{end}}</dd>
+  <dt>Provider ID</dt><dd><code class="dim">{{.Instance.ProviderID}}</code></dd>
+  <dt>Runner ID</dt><dd><code class="dim">{{.Instance.ForgeRunnerID}}</code></dd>
+  <dt>Job</dt><dd><code class="dim">{{.Instance.JobID}}</code></dd>
+  <dt>Public IP</dt><dd>{{.Instance.PublicIP}}</dd>
+  <dt>Created</dt><dd>{{ts .Instance.CreatedAt}}</dd>
+</dl>
+{{if .Instance.Error}}<div class="flash bad">{{.Instance.Error}}</div>{{end}}
+{{if .Instance.Logs}}
+<h2>Output</h2>
+<pre class="logs">{{.Instance.Logs}}</pre>
+{{else}}
+<p class="muted">No output was captured for this machine.</p>
+{{end}}
+{{end}}

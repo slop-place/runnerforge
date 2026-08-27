@@ -1,0 +1,25 @@
+{{define "content"}}
+<h1>Dashboard</h1>
+
+<div class="cards">
+  <div class="card"><span class="n">{{.Stats.Pools}}</span><span class="l">pools</span></div>
+  <div class="card"><span class="n">{{.Stats.Live}}</span><span class="l">machines running</span></div>
+  <div class="card"><span class="n">{{.Stats.Busy}}</span><span class="l">running a job</span></div>
+  <div class="card {{if .Stats.Failed}}bad{{end}}"><span class="n">{{.Stats.Failed}}</span><span class="l">failed</span></div>
+</div>
+
+<h2>Pools</h2>
+<div hx-get="/partials/pools" hx-trigger="load, every 5s" hx-swap="innerHTML">
+  <p class="muted">loading…</p>
+</div>
+
+<h2>Machines</h2>
+<div hx-get="/partials/instances" hx-trigger="load, every 3s" hx-swap="innerHTML">
+  <p class="muted">loading…</p>
+</div>
+
+<h2>Recent activity</h2>
+<div hx-get="/partials/events" hx-trigger="load, every 5s" hx-swap="innerHTML">
+  <p class="muted">loading…</p>
+</div>
+{{end}}

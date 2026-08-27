@@ -1,0 +1,30 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · runnerforge</title>
+<script src="/static/htmx.min.js"></script>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header>
+  <a class="brand" href="/">runner<b>forge</b></a>
+  <nav>
+    <a href="/" {{if eq .Nav "dash"}}class="on"{{end}}>Dashboard</a>
+    <a href="/pools" {{if eq .Nav "pools"}}class="on"{{end}}>Pools</a>
+    <a href="/clouds" {{if eq .Nav "clouds"}}class="on"{{end}}>Clouds</a>
+    <a href="/forges" {{if eq .Nav "forges"}}class="on"{{end}}>Forges</a>
+    <a href="/instances" {{if eq .Nav "instances"}}class="on"{{end}}>Machines</a>
+    <a href="/events" {{if eq .Nav "events"}}class="on"{{end}}>Events</a>
+  </nav>
+  <form hx-post="/reap" hx-swap="none" class="inline">
+    <button class="ghost" title="Sweep every cloud for stray machines now">Reap now</button>
+  </form>
+</header>
+<main>
+{{if .Flash}}<div class="flash {{.FlashKind}}">{{.Flash}}</div>{{end}}
+{{template "content" .}}
+</main>
+</body>
+</html>{{end}}

@@ -1,0 +1,79 @@
+{{define "content"}}
+<h1>{{.Cloud.Name}} <span class="tag">{{.Cloud.Driver}}</span></h1>
+
+<form method="post" action="/clouds/{{.Cloud.ID}}" class="form">
+  <label>Name<input name="name" value="{{.Cloud.Name}}" required></label>
+  <label class="check"><input type="checkbox" name="enabled" {{if .Cloud.Enabled}}checked{{end}}> Enabled</label>
+  <label>Settings <span class="hint">JSON</span>
+    <textarea name="settings" rows="5">{{.SettingsJSON}}</textarea>
+  </label>
+  <label>Credentials <span class="hint">leave blank to keep the stored values{{if .HasCreds}} ({{.CredKeys}}){{end}}</span>
+    <textarea name="credentials" rows="3" placeholder="{}"></textarea>
+  </label>
+  <button>Save</button>
+  <a class="ghost danger" href="/clouds/{{.Cloud.ID}}/delete">Delete cloud</a>
+</form>
+
+<h2>Instance sizes</h2>
+<p class="lede">Pools ask for a size by name. What that name means is defined here,
+per cloud, so <code>large</code> can be a <code>c3-8</code> on one provider and a
+<code>cpx41</code> on another.</p>
+<table>
+  <thead><tr><th>Name</th><th>Spec</th><th>vCPU</th><th>RAM</th><th>$/hr</th><th></th></tr></thead>
+  <tbody>
+  {{range .Cloud.Sizes}}
+    <tr>
+      <td><b>{{.Name}}</b></td>
+      <td><code class="dim">{{specjson .Spec}}</code></td>
+      <td>{{.VCPUs}}</td>
+      <td>{{if .MemoryMB}}{{.MemoryMB}} MB{{end}}</td>
+      <td>{{if .HourlyUSD}}{{printf "%.4f" .HourlyUSD}}{{end}}</td>
+      <td class="right">
+        <form hx-post="/sizes/{{.ID}}/delete" hx-target="closest tr" hx-swap="delete" class="inline">
+          <button class="ghost danger">remove</button>
+        </form>
+      </td>
+    </tr>
+  {{else}}
+    <tr><td colspan="6" class="empty">No sizes yet. A pool cannot start without one.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+<form method="post" action="/clouds/{{.Cloud.ID}}/sizes" class="form row">
+  <label>Name<input name="name" required placeholder="large"></label>
+  <label>Spec <span class="hint">JSON</span><input name="spec" required placeholder='{"flavor": "c3-8"}'></label>
+  <label>vCPU<input name="vcpus" type="number" min="0" placeholder="4"></label>
+  <label>RAM MB<input name="memory_mb" type="number" min="0" placeholder="8192"></label>
+  <label>$/hr<input name="hourly_usd" type="text" placeholder="0.0740"></label>
+  <button>Add size</button>
+</form>
+
+<h2>Images</h2>
+<table>
+  <thead><tr><th>Name</th><th>Spec</th><th>Login user</th><th>Docker preinstalled</th><th></th></tr></thead>
+  <tbody>
+  {{range .Cloud.Images}}
+    <tr>
+      <td><b>{{.Name}}</b></td>
+      <td><code class="dim">{{specjson .Spec}}</code></td>
+      <td>{{.Username}}</td>
+      <td>{{if .PreinstalledDocker}}yes{{else}}no{{end}}</td>
+      <td class="right">
+        <form hx-post="/images/{{.ID}}/delete" hx-target="closest tr" hx-swap="delete" class="inline">
+          <button class="ghost danger">remove</button>
+        </form>
+      </td>
+    </tr>
+  {{else}}
+    <tr><td colspan="5" class="empty">No images yet.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+<form method="post" action="/clouds/{{.Cloud.ID}}/images" class="form row">
+  <label>Name<input name="name" required placeholder="ci-base"></label>
+  <label>Spec <span class="hint">JSON</span><input name="spec" required placeholder='{"id": "22ef146b-..."}'></label>
+  <label>Login user<input name="username" placeholder="debian"></label>
+  <label class="check"><input type="checkbox" name="preinstalled_docker"> Docker preinstalled</label>
+  <button>Add image</button>
+</form>
+{{end}}

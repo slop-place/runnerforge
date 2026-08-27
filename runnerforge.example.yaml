@@ -1,0 +1,29 @@
+# runnerforge bootstrap configuration.
+#
+# Deliberately small: clouds, forges and pools are created and edited in the web
+# UI, not here. This file holds only what the process needs before it can open
+# the database and serve that UI.
+
+# Stable identity for this deployment. It is written onto every machine as an
+# ownership tag, so two runnerforge deployments sharing a cloud account must not
+# share an id — they would reap each other's machines. Changing it orphans every
+# machine created under the old value.
+id: runnerforge-1
+
+listen: ":8080"
+
+# Externally reachable URL, used to show operators the webhook endpoint to
+# register with their forge.
+base_url: "https://runnerforge.example.com"
+
+database:
+  driver: sqlite        # or postgres
+  dsn: runnerforge.db   # postgres: "host=... user=... dbname=... sslmode=require"
+
+# Encrypts forge tokens and cloud credentials at rest, since those live in the
+# database rather than in a file you control. Generate with: runnerforge genkey
+# Losing this key means re-entering every credential.
+secret_key: "${RUNNERFORGE_SECRET_KEY}"
+
+reconcile_interval: 10s
+reap_interval: 2m

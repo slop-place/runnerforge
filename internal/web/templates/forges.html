@@ -1,0 +1,51 @@
+{{define "content"}}
+<h1>Forges</h1>
+<p class="lede">A forge is one connection to GitHub, GitLab or Forgejo, scoped to
+a repository, organisation or group. runnerforge only ever creates runners inside
+that scope.</p>
+
+<table>
+  <thead><tr><th>Name</th><th>Kind</th><th>Scope</th><th>Status</th><th></th></tr></thead>
+  <tbody>
+  {{range .Forges}}
+    <tr class="{{if not .Enabled}}off{{end}}">
+      <td><a href="/forges/{{.ID}}">{{.Name}}</a></td>
+      <td><span class="tag">{{.Kind}}</span></td>
+      <td><code class="dim">{{scope .Settings}}</code></td>
+      <td>
+        {{if eq .Status "ok"}}<span class="ok">reachable</span>
+        {{else if .Status}}<span class="bad" title="{{.StatusDetail}}">{{.Status}}</span>
+        {{else}}<span class="muted">unchecked</span>{{end}}
+      </td>
+      <td class="right">
+        <form hx-post="/forges/{{.ID}}/check" hx-target="closest tr" hx-swap="outerHTML" class="inline">
+          <button class="ghost">test</button>
+        </form>
+        <a class="ghost" href="/forges/{{.ID}}">edit</a>
+      </td>
+    </tr>
+  {{else}}
+    <tr><td colspan="5" class="empty">No forges configured yet.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+
+<h2>Add a forge</h2>
+<form method="post" action="/forges" class="form">
+  <label>Name<input name="name" required placeholder="github-slop"></label>
+  <label>Kind
+    <select name="kind">
+      <option value="github">github</option>
+      <option value="gitlab">gitlab</option>
+      <option value="forgejo">forgejo</option>
+    </select>
+  </label>
+  <label>Settings <span class="hint">JSON</span>
+    <textarea name="settings" rows="4" placeholder='{"url": "https://api.github.com", "scope": "repo", "owner": "slop-place", "repo": "ci-test"}'></textarea>
+  </label>
+  <label>Credentials <span class="hint">JSON, encrypted at rest</span>
+    <textarea name="credentials" rows="2" placeholder='{"token": "..."}'></textarea>
+  </label>
+  <button>Add forge</button>
+</form>
+{{end}}

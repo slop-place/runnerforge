@@ -294,6 +294,7 @@ func (c *Controller) launch(ctx context.Context, pool *store.Pool, prov cloud.Pr
 		JobID:          jobID,
 		JobTimeout:     pool.JobTimeout(),
 		ContainerImage: pool.ContainerImage,
+		Network:        cloud.SpecString(specOf(pool.Size), "network"),
 	})
 	if err != nil {
 		return fail(fmt.Errorf("build bootstrap: %w", err))

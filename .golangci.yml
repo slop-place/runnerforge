@@ -1,0 +1,111 @@
+# Every linter golangci-lint ships is enabled, then a small number are turned
+# off again. Each exclusion below is a linter that is either incompatible with
+# another enabled linter, or actively at odds with this project's design. They
+# are listed with reasons rather than silently dropped.
+#
+# Everything not listed here passes with zero issues.
+version: "2"
+
+linters:
+  default: all
+  disable:
+    # Requires every struct literal to set every field. Impossible to satisfy
+    # alongside any options struct, and it fights `zerologlint`-style defaults.
+    - exhaustruct
+    - exhaustruct_v5
+
+    # Bans short identifiers. Directly contradicts Go's own conventions for
+    # receivers, loop indices and `w, r http.ResponseWriter, *http.Request`.
+    - varnamelen
+
+    # Prescriptive blank-line placement. `wsl` and `wsl_v5` are two generations
+    # of the same linter and disagree with each other, so both cannot pass.
+    - wsl
+    - wsl_v5
+    - nlreturn
+
+    # Denies every import unless explicitly allowlisted. Meaningless without a
+    # site-specific policy; enabling it with no policy fails every file.
+    - depguard
+
+    # Bans dynamic errors, requiring a package-level sentinel for every message.
+    # This codebase deliberately returns contextual errors ("cloud %q: size %q
+    # has no flavor"), which are more useful to an operator than a sentinel.
+    - err113
+
+    # Bans the canonical `if err := f(); err != nil { ... }`, which is the
+    # single most common construct in idiomatic Go.
+    - noinlineerr
+
+    # Bans returning interfaces from constructors. The cloud and forge driver
+    # registries exist precisely to return interfaces; see internal/cloud.
+    - ireturn
+
+    # Bans package-level variables and init(). Driver self-registration via
+    # init() is the same pattern database/sql and image/png use, and is what
+    # keeps drivers decoupled from the controller.
+    - gochecknoglobals
+    - gochecknoinits
+
+    # Enforces a house style for JSON tags. These tags mirror the GitHub,
+    # GitLab, Forgejo, Docker and OpenStack APIs and must match them exactly.
+    - tagliatelle
+
+    # Cosmetic alignment of struct tags; conflicts with gofmt's own alignment.
+    - tagalign
+
+settings:
+  # Errors crossing a package boundary are wrapped; wrapping again inside the
+  # package that produced them adds noise without adding context.
+  wrapcheck:
+    ignore-sigs:
+      - .Errorf(
+      - errors.New(
+      - errors.Join(
+      - errors.Unwrap(
+      - .Wrap(
+      - .WithContext(
+  cyclop:
+    max-complexity: 20
+  gocognit:
+    min-complexity: 30
+  funlen:
+    lines: 120
+    statements: 70
+  lll:
+    line-length: 120
+  mnd:
+    ignored-functions:
+      - strconv.Parse*
+      - strconv.Format*
+  revive:
+    rules:
+      - name: exported
+      - name: package-comments
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+exclusions:
+  rules:
+    # Tests exercise failure paths and build fixtures; the complexity and
+    # duplication limits that keep production code readable get in the way.
+    - path: _test\.go
+      linters:
+        - dupl
+        - funlen
+        - gocognit
+        - cyclop
+        - maintidx
+        - errcheck
+        - noctx
+        - gosec
+        - wrapcheck
+        - contextcheck
+        - forcetypeassert

@@ -1,0 +1,50 @@
+{{define "content"}}
+<h1>Clouds</h1>
+<p class="lede">A cloud is one provider account. Each carries its own catalogue of
+instance sizes and images, which pools refer to by name — so the same pool
+definition works on any of them.</p>
+
+<table>
+  <thead><tr><th>Name</th><th>Driver</th><th>Sizes</th><th>Images</th><th>Status</th><th></th></tr></thead>
+  <tbody>
+  {{range .Clouds}}
+    <tr class="{{if not .Enabled}}off{{end}}">
+      <td><a href="/clouds/{{.ID}}">{{.Name}}</a></td>
+      <td><span class="tag">{{.Driver}}</span></td>
+      <td>{{len .Sizes}}</td>
+      <td>{{len .Images}}</td>
+      <td>
+        {{if eq .Status "ok"}}<span class="ok">reachable</span>
+        {{else if .Status}}<span class="bad" title="{{.StatusDetail}}">{{.Status}}</span>
+        {{else}}<span class="muted">unchecked</span>{{end}}
+      </td>
+      <td class="right">
+        <form hx-post="/clouds/{{.ID}}/check" hx-target="closest tr" hx-swap="outerHTML" class="inline">
+          <button class="ghost">test</button>
+        </form>
+        <a class="ghost" href="/clouds/{{.ID}}">edit</a>
+      </td>
+    </tr>
+  {{else}}
+    <tr><td colspan="6" class="empty">No clouds configured yet.</td></tr>
+  {{end}}
+  </tbody>
+</table>
+
+<h2>Add a cloud</h2>
+<form method="post" action="/clouds" class="form">
+  <label>Name<input name="name" required placeholder="ovh-us-east"></label>
+  <label>Driver
+    <select name="driver">
+      {{range .Drivers}}<option value="{{.}}">{{.}}</option>{{end}}
+    </select>
+  </label>
+  <label>Settings <span class="hint">JSON, driver-specific and non-secret</span>
+    <textarea name="settings" rows="4" placeholder='{"region": "US-EAST-VA-1", "auth_url": "https://auth.cloud.ovh.us/v3", "project_id": "..."}'></textarea>
+  </label>
+  <label>Credentials <span class="hint">JSON, encrypted at rest and never shown again</span>
+    <textarea name="credentials" rows="3" placeholder='{"username": "user-xxxx", "password": "..."}'></textarea>
+  </label>
+  <button>Add cloud</button>
+</form>
+{{end}}
