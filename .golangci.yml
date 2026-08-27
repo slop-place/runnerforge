@@ -56,6 +56,11 @@ linters:
     # Superseded by gomodguard_v2, which stays enabled.
     - gomodguard
 
+    # Requires every test to live in a separate _test package. The most valuable
+    # unit tests here cover unexported logic — the scaling rules, the log
+    # de-framing, the redirect vetting — which is only reachable in-package.
+    - testpackage
+
   settings:
     wrapcheck:
       ignore-sigs:

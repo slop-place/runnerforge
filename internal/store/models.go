@@ -108,12 +108,20 @@ func (p Params) String(k string) string {
 	return ""
 }
 
+// A note on the Enabled fields below.
+//
+// They, and Pool.PublicIPv4, deliberately carry no `default:true` tag. GORM omits Go zero values from
+// an INSERT, so a column defaulting to true silently rewrites an explicit
+// `Enabled: false` into `true` — which would mean a cloud or forge created as
+// disabled comes back enabled, and the controller starts provisioning against a
+// connection the operator meant to be off. Callers set Enabled explicitly.
+
 // Cloud is a configured provider account.
 type Cloud struct {
 	ID      uint   `gorm:"primarykey" json:"id"`
 	Name    string `gorm:"uniqueIndex;not null" json:"name"`
 	Driver  string `gorm:"not null" json:"driver"`
-	Enabled bool   `gorm:"default:true" json:"enabled"`
+	Enabled bool   `json:"enabled"`
 
 	// Settings are non-secret driver options (region, auth URL, project id).
 	Settings Params `gorm:"type:text" json:"settings"`
@@ -186,7 +194,7 @@ type Forge struct {
 	ID      uint   `gorm:"primarykey" json:"id"`
 	Name    string `gorm:"uniqueIndex;not null" json:"name"`
 	Kind    string `gorm:"not null" json:"kind"`
-	Enabled bool   `gorm:"default:true" json:"enabled"`
+	Enabled bool   `json:"enabled"`
 
 	// Settings hold the non-secret connection details: base URL, and the scope
 	// this connection manages runners for (owner/repo, org, group).
@@ -210,7 +218,7 @@ type Forge struct {
 type Pool struct {
 	ID      uint   `gorm:"primarykey" json:"id"`
 	Name    string `gorm:"uniqueIndex;not null" json:"name"`
-	Enabled bool   `gorm:"default:true" json:"enabled"`
+	Enabled bool   `json:"enabled"`
 
 	ForgeID uint   `gorm:"index;not null" json:"forge_id"`
 	Forge   *Forge `json:"forge,omitempty"`
@@ -241,7 +249,9 @@ type Pool struct {
 	// ContainerImage is the runner image for container-mode clouds (docker, k8s).
 	ContainerImage string `json:"container_image"`
 
-	PublicIPv4   bool       `gorm:"default:true" json:"public_ipv4"`
+	// Same reasoning as Enabled: no default, or a pool created without a
+	// public IP would silently get one.
+	PublicIPv4   bool       `json:"public_ipv4"`
 	AllowSSHFrom StringList `gorm:"type:text" json:"allow_ssh_from"`
 
 	CreatedAt time.Time      `json:"created_at"`

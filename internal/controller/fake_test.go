@@ -66,8 +66,11 @@ type fakeProvider struct {
 	// failDelete makes Delete return an error, to check that a row is not
 	// closed out while its machine is still alive.
 	failDelete bool
-	listErr    error
-	nextID     int
+	// failProvision makes Provision fail, to check the forge registration is
+	// rolled back rather than left dangling.
+	failProvision error
+	listErr       error
+	nextID        int
 }
 
 func (p *fakeProvider) Name() string { return "fake" }
@@ -83,6 +86,9 @@ func (p *fakeProvider) Capabilities() cloud.Capabilities {
 func (p *fakeProvider) Provision(_ context.Context, req cloud.ProvisionRequest) (*cloud.Instance, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.failProvision != nil {
+		return nil, p.failProvision
+	}
 	p.nextID++
 	inst := &cloud.Instance{
 		ID:        fmt.Sprintf("fake-%d", p.nextID),
