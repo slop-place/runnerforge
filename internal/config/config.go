@@ -1,0 +1,143 @@
+// Package config loads runnerforge's bootstrap configuration.
+//
+// Deliberately small. Clouds, forges, pools, instance sizes and images are not
+// configured here — they are records in the database, created and edited through
+// the web UI. This file holds only what the process needs before it can open
+// that database and serve that UI.
+package config
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"os"
+	"time"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Config is the bootstrap file.
+type Config struct {
+	// ID is the stable identity of this deployment. It is written onto every
+	// machine as an ownership tag, so two runnerforge deployments sharing a
+	// cloud account must not share an ID or they will reap each other's
+	// machines. Changing it orphans every machine created under the old value.
+	ID string `yaml:"id"`
+
+	// Listen is the address for the web UI and webhook receiver.
+	Listen string `yaml:"listen"`
+
+	// BaseURL is the externally reachable URL of this deployment. The UI uses it
+	// to show operators the webhook endpoint to register with their forge.
+	BaseURL string `yaml:"base_url"`
+
+	Database Database `yaml:"database"`
+
+	// SecretKey encrypts forge tokens and cloud credentials at rest, since those
+	// live in the database rather than in a file the operator controls. It is a
+	// 32-byte hex string; see GenerateSecretKey.
+	SecretKey string `yaml:"secret_key"`
+
+	// ReconcileInterval is how often each pool is evaluated.
+	ReconcileInterval time.Duration `yaml:"reconcile_interval"`
+	// ReapInterval is how often the reaper sweeps every cloud for stray machines.
+	ReapInterval time.Duration `yaml:"reap_interval"`
+}
+
+// Database selects the state store.
+type Database struct {
+	// Driver is "sqlite" (default) or "postgres".
+	Driver string `yaml:"driver"`
+	DSN    string `yaml:"dsn"`
+}
+
+// Defaults.
+const (
+	DefaultListen            = ":8080"
+	DefaultReconcileInterval = 10 * time.Second
+	DefaultReapInterval      = 2 * time.Minute
+)
+
+// Load reads and validates the bootstrap file. ${VAR} references are expanded
+// from the environment so secrets need not be written into the file.
+func Load(path string) (*Config, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	expanded := os.Expand(string(raw), func(k string) string {
+		if k == "$" {
+			return "$"
+		}
+		return os.Getenv(k)
+	})
+	var c Config
+	if err := yaml.Unmarshal([]byte(expanded), &c); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	c.applyDefaults()
+	if err := c.Validate(); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (c *Config) applyDefaults() {
+	if c.Listen == "" {
+		c.Listen = DefaultListen
+	}
+	if c.ReconcileInterval == 0 {
+		c.ReconcileInterval = DefaultReconcileInterval
+	}
+	if c.ReapInterval == 0 {
+		c.ReapInterval = DefaultReapInterval
+	}
+	if c.Database.Driver == "" {
+		c.Database.Driver = "sqlite"
+	}
+	if c.Database.DSN == "" {
+		c.Database.DSN = "runnerforge.db"
+	}
+}
+
+// Validate checks the bootstrap settings.
+func (c *Config) Validate() error {
+	if c.ID == "" {
+		return errors.New("id is required: it is the ownership tag written to every machine")
+	}
+	switch c.Database.Driver {
+	case "sqlite", "postgres":
+	default:
+		return fmt.Errorf("unsupported database driver %q (want sqlite or postgres)", c.Database.Driver)
+	}
+	if c.SecretKey == "" {
+		return errors.New("secret_key is required: it encrypts forge and cloud credentials at rest " +
+			"(generate one with `runnerforge genkey`)")
+	}
+	if _, err := c.Key(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// Key decodes SecretKey into raw bytes.
+func (c *Config) Key() ([]byte, error) {
+	k, err := hex.DecodeString(c.SecretKey)
+	if err != nil {
+		return nil, fmt.Errorf("secret_key is not valid hex: %w", err)
+	}
+	if len(k) != 32 {
+		return nil, fmt.Errorf("secret_key must decode to 32 bytes, got %d", len(k))
+	}
+	return k, nil
+}
+
+// GenerateSecretKey returns a new random key as hex.
+func GenerateSecretKey() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
