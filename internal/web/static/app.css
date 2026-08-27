@@ -92,6 +92,16 @@ nav a {
 nav a:hover { border-color: var(--line); }
 nav a.on { background: var(--ink); color: var(--bg); }
 
+.whoami {
+  font-family: var(--mono);
+  font-size: 0.7rem;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  max-width: 18ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ── page ────────────────────────────────────────────────────────────── */
 
 main {

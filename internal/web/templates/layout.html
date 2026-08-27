@@ -24,8 +24,20 @@
   <form hx-post="/reap" hx-swap="none" class="inline">
     <button class="ghost" title="Sweep every cloud for stray machines now">Reap now</button>
   </form>
+  {{if .User}}
+    <span class="whoami" title="Signed in">{{.User}}</span>
+    <form method="post" action="/auth/logout" class="inline">
+      <button class="ghost">Sign out</button>
+    </form>
+  {{end}}
 </header>
 <main>
+{{if not .Authenticated}}
+  <div class="flash bad">
+    This console is not protected. Anyone who can reach it can add a cloud and
+    destroy machines. Set <code>oidc.issuer</code> in the config to require sign-in.
+  </div>
+{{end}}
 {{if .Flash}}<div class="flash {{.FlashKind}}">{{.Flash}}</div>{{end}}
 {{template "content" .}}
 </main>

@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/slop-place/runnerforge/internal/auth"
 	"github.com/slop-place/runnerforge/internal/cloud"
 	"github.com/slop-place/runnerforge/internal/config"
 	"github.com/slop-place/runnerforge/internal/controller"
@@ -42,11 +43,15 @@ type Server struct {
 	cfg  *config.Config
 	log  *slog.Logger
 	tpl  map[string]*template.Template
+	auth *auth.Authenticator
 }
 
-// New builds the UI server.
-func New(db *store.DB, ctrl *controller.Controller, cfg *config.Config, log *slog.Logger) *Server {
-	s := &Server{db: db, ctrl: ctrl, cfg: cfg, log: log}
+// New builds the UI server. A nil authenticator leaves the UI ungated.
+func New(
+	db *store.DB, ctrl *controller.Controller, cfg *config.Config,
+	log *slog.Logger, authn *auth.Authenticator,
+) *Server {
+	s := &Server{db: db, ctrl: ctrl, cfg: cfg, log: log, auth: authn}
 	s.tpl = mustParse()
 	return s
 }
@@ -212,7 +217,8 @@ func (s *Server) Handler() http.Handler {
 		_, _ = w.Write([]byte("ok"))
 	})
 
-	return mux
+	s.auth.Routes(mux)
+	return s.auth.Middleware(mux)
 }
 
 // view is the data every page template receives.
@@ -221,6 +227,11 @@ type view struct {
 	Nav       string
 	Flash     string
 	FlashKind string
+
+	// User is who is signed in, and Authenticated says whether the UI is gated
+	// at all. An ungated UI says so on every page rather than looking secure.
+	User          string
+	Authenticated bool
 
 	Stats     stats
 	Clouds    []store.Cloud
@@ -319,7 +330,10 @@ func internalRedirect(path, key, value string) string {
 }
 
 func (s *Server) base(r *http.Request, title, nav string) view {
-	v := view{Title: title, Nav: nav}
+	v := view{Title: title, Nav: nav, Authenticated: s.auth.Enabled()}
+	if u, ok := auth.UserFrom(r.Context()); ok {
+		v.User = u.Display()
+	}
 	if e := r.URL.Query().Get("err"); e != "" {
 		v.Flash, v.FlashKind = e, "bad"
 	}

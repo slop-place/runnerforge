@@ -54,6 +54,7 @@ the per-forge gotchas that shaped it.
 | Controller, reaper, job binding | working |
 | Web UI (HTMX) | working |
 | Cost tracking | working |
+| OIDC sign-in | working |
 | Hetzner, DigitalOcean, Kubernetes drivers | not started |
 | Webhook ingestion (push instead of polling) | not started |
 
@@ -104,3 +105,28 @@ else is managed in the UI.
 
 The image is 19 MB, runs as a non-root user from `scratch`, and needs no
 Kubernetes.
+
+### Protecting the console
+
+The UI holds cloud credentials and can destroy machines. Set an OIDC issuer and
+it is gated; leave it unset and runnerforge says so at startup and on every
+page, because running open is only reasonable on a network where everyone who
+can reach it is already trusted.
+
+```yaml
+oidc:
+  issuer: https://accounts.google.com
+  client_id: ...
+  redirect_url: https://runnerforge.example.com/auth/callback
+  allowed_domains: ["example.com"]
+```
+
+Authorization code flow with PKCE, a nonce, and state — PKCE is used even when
+a client secret is configured. Sessions are HMAC-signed cookies carrying their
+own expiry, since the cookie's own is set by the client. `Secure` follows the
+redirect URL's scheme so a plain-http deployment on a private network still
+works, and `SameSite=Lax` keeps the cookie off cross-site POSTs.
+
+An unverified email address never satisfies `allowed_domains` or
+`allowed_emails`: on some providers anyone can claim any address until it is
+verified.

@@ -46,7 +46,8 @@ func newServer(t *testing.T) (*store.DB, http.Handler) {
 		t.Fatal(err)
 	}
 	log := slog.New(slog.DiscardHandler)
-	return db, New(db, controller.New(db, cfg, log), cfg, log).Handler()
+	// Unauthenticated: the middleware is exercised in the auth package.
+	return db, New(db, controller.New(db, cfg, log), cfg, log, nil).Handler()
 }
 
 func get(t *testing.T, h http.Handler, path string) *httptest.ResponseRecorder {

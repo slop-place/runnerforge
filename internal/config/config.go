@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/slop-place/runnerforge/internal/auth"
 )
 
 // Config is the bootstrap file.
@@ -38,6 +40,11 @@ type Config struct {
 	// live in the database rather than in a file the operator controls. It is a
 	// 32-byte hex string; see GenerateSecretKey.
 	SecretKey string `yaml:"secret_key"`
+
+	// OIDC gates the web UI behind an identity provider. Leaving the issuer
+	// empty leaves the UI open, which runnerforge warns about at startup and on
+	// every page — reasonable on a trusted network, not otherwise.
+	OIDC auth.Config `yaml:"oidc"`
 
 	// ReconcileInterval is how often each pool is evaluated.
 	ReconcileInterval time.Duration `yaml:"reconcile_interval"`
@@ -103,6 +110,9 @@ func (c *Config) Validate() error {
 			"(generate one with `runnerforge genkey`)")
 	}
 	if _, err := c.Key(); err != nil {
+		return err
+	}
+	if err := c.OIDC.Validate(); err != nil {
 		return err
 	}
 	return nil

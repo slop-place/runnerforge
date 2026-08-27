@@ -25,5 +25,26 @@ database:
 # Losing this key means re-entering every credential.
 secret_key: "${RUNNERFORGE_SECRET_KEY}"
 
+# Gate the web UI behind an identity provider.
+#
+# Leave the issuer empty and the UI is open: anyone who can reach it can add a
+# cloud and destroy machines. runnerforge says so at startup and on every page,
+# because that is only reasonable on a network where everyone who can reach it
+# is already trusted.
+oidc:
+  issuer: ""            # e.g. https://accounts.google.com, or your Keycloak realm
+  client_id: ""
+  client_secret: "${RUNNERFORGE_OIDC_SECRET}"   # omit for a public client; PKCE is always used
+  redirect_url: ""      # must exactly match the provider's registration:
+                        # https://runnerforge.example.com/auth/callback
+  session_ttl: 12h
+
+  # Restrict who may sign in. With neither set, anyone the provider will
+  # authenticate is allowed — right only when the provider is already
+  # restricted to your organisation. An unverified email address never
+  # satisfies either list.
+  allowed_domains: []   # ["example.com"]
+  allowed_emails: []    # ["ops@example.com"]
+
 reconcile_interval: 10s
 reap_interval: 2m

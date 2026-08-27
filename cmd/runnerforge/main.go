@@ -24,6 +24,7 @@ import (
 	_ "github.com/slop-place/runnerforge/internal/forge/github"
 	_ "github.com/slop-place/runnerforge/internal/forge/gitlab"
 
+	"github.com/slop-place/runnerforge/internal/auth"
 	"github.com/slop-place/runnerforge/internal/config"
 	"github.com/slop-place/runnerforge/internal/controller"
 	"github.com/slop-place/runnerforge/internal/store"
@@ -162,14 +163,31 @@ func serve(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	key, err := cfg.Key()
+	if err != nil {
+		return err
+	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
 
+	// Discovery talks to the issuer, so this can fail when the provider is
+	// unreachable — better at startup than on an operator's first request.
+	authn, err := auth.New(ctx, cfg.OIDC, key, log)
+	if err != nil {
+		return fmt.Errorf("configure sign-in: %w", err)
+	}
+	if authn.Enabled() {
+		log.Info("web UI requires sign-in", "issuer", cfg.OIDC.Issuer)
+	} else {
+		log.Warn("web UI is NOT protected: anyone who can reach it can add a cloud " +
+			"and destroy machines. Set oidc.issuer to require sign-in.")
+	}
+
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           web.New(db, ctrl, cfg, log).Handler(),
+		Handler:           web.New(db, ctrl, cfg, log, authn).Handler(),
 		ReadHeaderTimeout: readHeaderTimeout,
 	}
 
