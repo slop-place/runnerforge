@@ -1,0 +1,79 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+      - name: Unit and integration tests
+        run: go test -race -count=1 -cover ./...
+
+  e2e-forgejo:
+    # The end-to-end tests drive a real Forgejo and a real Docker daemon.
+    # Runners are containers rather than cloud VMs, which is the only
+    # substitution — everything else is the real thing.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+      - name: Start Forgejo
+        run: |
+          eval "$(testdata/e2e-up.sh)"
+          {
+            echo "RF_TEST_FORGEJO_API=$RF_TEST_FORGEJO_API"
+            echo "RF_TEST_FORGEJO_INTERNAL=$RF_TEST_FORGEJO_INTERNAL"
+            echo "RF_TEST_FORGEJO_TOKEN=$RF_TEST_FORGEJO_TOKEN"
+            echo "RF_TEST_FORGEJO_OWNER=$RF_TEST_FORGEJO_OWNER"
+            echo "RF_TEST_FORGEJO_REPO=$RF_TEST_FORGEJO_REPO"
+            echo "RF_TEST_DOCKER_NETWORK=$RF_TEST_DOCKER_NETWORK"
+          } >> "$GITHUB_ENV"
+      - name: End-to-end
+        run: go test -count=1 -timeout 10m -run TestForgejoEndToEnd -v ./internal/controller/
+      - name: Assert nothing leaked
+        # A test that leaves machines behind is a failing test, whatever it
+        # reported.
+        run: |
+          left=$(docker ps -aq --filter "label=runnerforge-controller" | wc -l)
+          if [ "$left" -ne 0 ]; then
+            echo "::error::$left runner container(s) survived the test run"
+            docker ps -a --filter "label=runnerforge-controller"
+            exit 1
+          fi
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          build-args: VERSION=${{ github.sha }}

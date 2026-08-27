@@ -42,13 +42,15 @@ the per-forge gotchas that shaped it.
 
 | Component | State |
 |---|---|
-| Forgejo | working, verified end to end against a live instance |
-| Cloud: Docker (local machines-as-containers) | working |
+| **Forgejo** | working, verified end to end against a live instance |
+| **GitLab** | working, verified end to end against a live instance |
+| **GitHub** | working, verified end to end against a real repository |
+| Cloud: OpenStack / OVHcloud | working, verified against real VMs |
+| Cloud: Docker (machines-as-containers) | working |
 | Controller, reaper, job binding | working |
-| GitLab | in progress |
-| GitHub | in progress |
-| Cloud: OpenStack / OVHcloud | in progress |
-| Web UI | in progress |
+| Web UI (HTMX) | working |
+| Hetzner, DigitalOcean, Kubernetes drivers | not started |
+| Webhook ingestion (push instead of polling) | not started |
 
 ## Testing
 
@@ -57,9 +59,38 @@ instance and a real Docker daemon; runners are containers rather than cloud VMs,
 which is the only substitution.
 
 ```sh
-eval "$(testdata/e2e-up.sh)"   # starts Forgejo + a shared docker network
-go test ./...
+go test ./...                          # unit + integration; e2e tests skip themselves
+
+eval "$(testdata/e2e-up.sh)"           # starts Forgejo + a shared docker network
+RF_WITH_GITLAB=1 eval "$(testdata/e2e-up.sh)"   # add GitLab (slow, ~4 GiB)
+go test ./internal/controller/ -run EndToEnd -v
+```
+
+GitHub has no self-hostable substitute, so its end-to-end test needs a real
+repository:
+
+```sh
+export RF_TEST_GITHUB_TOKEN=$(gh auth token)
+export RF_TEST_GITHUB_OWNER=your-org RF_TEST_GITHUB_REPO=your-scratch-repo
 ```
 
 Every end-to-end test asserts that no machine and no runner registration
 survives the run. A test that leaks is a failing test.
+
+`golangci-lint run ./...` passes with **every linter enabled** except a
+documented deny-list in `.golangci.yml`, each entry with a reason.
+
+## Running it
+
+```sh
+docker run -v ./data:/data -p 8080:8080 ghcr.io/slop-place/runnerforge \
+  genkey                                    # put the result in runnerforge.yaml
+docker run -v ./data:/data -p 8080:8080 ghcr.io/slop-place/runnerforge
+```
+
+Then open the UI and add a cloud, a size, an image, a forge and a pool. The
+config file holds only identity, database and the encryption key; everything
+else is managed in the UI.
+
+The image is 19 MB, runs as a non-root user from `scratch`, and needs no
+Kubernetes.

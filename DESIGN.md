@@ -11,8 +11,8 @@ Status: investigation / pre-implementation. Nothing built yet.
 
 | Question | Decision | Consequence |
 |---|---|---|
-| Cluster location | **Any cluster** (not necessarily OVH/vRack) | Runner VMs get public IPv4; that cost stays in the model. Private-network/gateway mode becomes a later per-pool option, not the default. GitHub webhooks need a publicly reachable ingress. |
-| GitLab path | **Fleeting plugin + `docker-autoscaler`** | Second binary `fleeting-plugin-ovh` in this repo; controller reconciles a `gitlab-runner` Deployment per pool. Manager→VM SSH required. |
+| Deployment | **Any container host.** Kubernetes is supported, not required — state lives in SQLite or Postgres, not etcd. | Runner VMs get public IPv4; that cost stays in the model. Private-network/gateway mode becomes a later per-pool option, not the default. GitHub webhooks need a publicly reachable ingress. |
+| GitLab path | **Changed during implementation** — shipped as the unified `run-single` path, not the fleeting plugin. See §3 for why. | No SSH into runner machines, so GitLab works on container-mode clouds and is testable without spending money. |
 | Job execution | **Docker on the VM** | Golden image ships Docker + prewarmed base images. See §4.1 for what "in a container" actually means per forge. |
 | Forges | **GitHub.com**, **self-managed GitLab**, **self-hosted Forgejo** | GitHub App auth + public webhook ingress; GitLab and Forgejo reached over your network — the manager *and* the runner VMs must both be able to reach them. |
 
@@ -176,27 +176,47 @@ list semantics and real cloud-init handling (via a small init wrapper), so an e2
 passes on `docker` exercises every line of the controller except the OVH API calls themselves.
 
 
-## 3. GitLab needs a second path
+## 3. GitLab needs a different approach — and the decision changed
 
-Two designs; they share the OVH driver but differ above it.
+Two designs were considered, sharing the OVH driver but differing above it.
 
-**(A) Fleeting plugin + `docker-autoscaler` — recommended.**
-Ship `fleeting-plugin-ovh` as a second binary in the same repo/image, reusing our OpenStack
-package. The controller then reconciles, per `RunnerPool`, a `gitlab-runner` Deployment with a
-generated `config.toml` (`[runners.autoscaler] plugin = "ovh"`, `capacity_per_instance = 1`,
-`max_use_count = 1` → one ephemeral VM per job). GitLab's own taskscaler owns queue semantics, so
-**the demand-signal problem disappears** — the manager already long-polls GitLab.
-*Caveat:* the manager connects to VMs over **SSH**, so this path needs inbound 22 to runner VMs
-(source-restricted to the manager's egress IP) and is incompatible with the no-public-IP
-optimization unless the cluster is OVH Managed Kubernetes on the same vRack.
+**(A) Fleeting plugin + `docker-autoscaler`.** Ship `fleeting-plugin-ovh` and
+have the controller reconcile a `gitlab-runner` Deployment per pool. GitLab's own
+taskscaler owns the queue, so the demand-signal problem disappears.
 
-**(B) Unified path.** Poll `GET /projects/:id/jobs?scope=pending` (or group-level), boot a VM
-running `gitlab-runner run-single --max-builds 1 --wait-timeout N`. No SSH, no plugin, identical
-shape to GitHub/Forgejo. *Caveat:* polling cost, and tag→job matching is approximate, so you can
-boot a VM that never gets the job you booted it for.
+**(B) Unified path.** Poll for pending jobs, boot a machine running
+`gitlab-runner run-single --max-builds 1`, exactly like the other two forges.
 
-**Chosen: (A).** Keep the `Forge` interface able to express (B) later — it is the escape
-hatch if the SSH requirement becomes a problem.
+**This was originally decided as (A), and shipped as (B).** Two things changed
+after that decision, both of which invalidated its premises:
+
+1. **State moved to a database and the UI.** The original design had the
+   controller reconciling Kubernetes Deployments. It no longer reconciles
+   anything Kubernetes-shaped, so "manage a `gitlab-runner` Deployment per pool"
+   stopped being a natural fit and became a special case.
+2. **Container-mode clouds became first-class.** Path A requires the controller
+   to hold **SSH access into every runner machine**. That cannot work on the
+   `docker` driver or a future Kubernetes driver, where a runner is a container
+   with no sshd — which would have left GitLab as the one forge that could not
+   be tested without spending money, and the one that could not run on half the
+   providers.
+
+Path B costs a polling loop and slightly loose tag matching. Path A would have
+cost SSH into every machine and a permanent structural exception. B is the
+better trade, and it is what the end-to-end test proves works.
+
+Path A remains viable as a second provisioning path for operators who want
+GitLab's native queue semantics; the `Forge` interface still expresses it.
+
+### What GitLab still costs us
+
+GitLab has no per-job credential and never deletes runners itself, so
+runnerforge does two things the forge does not:
+
+- **single-use is enforced on our side**, with `--max-builds 1` on the machine
+  and by destroying the machine afterwards;
+- **the registration is deleted by the reaper**, because a registration left
+  behind is a token that outlives the machine it was minted for.
 
 ## 4. Architecture (Kubernetes-native)
 
