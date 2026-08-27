@@ -94,6 +94,13 @@ func (c *Controller) advance(
 		return fmt.Errorf("get instance %s: %w", inst.Name, err)
 	}
 
+	// Billing starts when the machine is actually up, so this is stamped from
+	// the provider's own view rather than from when the row was created.
+	if inst.ActiveAt == nil && got.State == cloud.StateRunning {
+		now := time.Now().UTC()
+		inst.ActiveAt = &now
+	}
+
 	if got.PublicIP != "" && got.PublicIP != inst.PublicIP {
 		inst.PublicIP = got.PublicIP
 	}
@@ -261,5 +268,13 @@ func (c *Controller) destroy(ctx context.Context, prov cloud.Provider, fg forge.
 		}
 	}
 
+	// Settle before the row is closed out: this is the last point at which the
+	// machine's lifetime is known.
+	inst.Settle()
+	if inst.CostUSD > 0 {
+		c.db.Logf(ctx, "info", "cost", &inst.PoolID, &inst.ID,
+			"%s ran for %s and cost $%.4f",
+			inst.Name, inst.BilledDuration().Round(time.Second), inst.CostUSD)
+	}
 	return c.db.SetState(ctx, inst, store.StateDeleted)
 }

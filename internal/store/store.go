@@ -40,6 +40,13 @@ func Open(driver, dsn string) (*DB, error) {
 	}
 	db, err := gorm.Open(dial, &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
+		// Every timestamp is stored in UTC.
+		//
+		// GORM otherwise stamps rows in local time while the code that reads
+		// them back works in UTC, and a range query then compares across two
+		// offsets and silently matches nothing. That is how a cost total reads
+		// as zero while machines are running.
+		NowFunc: func() time.Time { return time.Now().UTC() },
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)

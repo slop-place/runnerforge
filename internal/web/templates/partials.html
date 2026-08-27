@@ -3,7 +3,7 @@
   <p class="empty">No pools yet. <a href="/pools/new">Create one</a> to start serving jobs.</p>
 {{else}}
 <table>
-  <thead><tr><th>Pool</th><th>Forge</th><th>Cloud</th><th>Size</th><th>Labels</th><th>Machines</th><th></th></tr></thead>
+  <thead><tr><th>Pool</th><th>Forge</th><th>Cloud</th><th>Size</th><th>Labels</th><th>Machines</th><th>24h</th><th></th></tr></thead>
   <tbody>
   {{range .Pools}}
     <tr class="{{if not .Pool.Enabled}}off{{end}}">
@@ -13,6 +13,7 @@
       <td>{{if .Pool.Size}}{{.Pool.Size.Name}}{{end}}</td>
       <td>{{range .Pool.Labels}}<span class="tag">{{.}}</span> {{end}}</td>
       <td>{{.Live}} / {{.Pool.MaxInstances}}{{if .Pool.MinIdle}} <span class="muted">(min {{.Pool.MinIdle}})</span>{{end}}</td>
+      <td class="num" title="{{.Spend.Machines}} machine(s) in the last 24h">{{usd .Spend.USD}}</td>
       <td class="right"><a class="ghost" href="/pools/{{.Pool.ID}}">edit</a></td>
     </tr>
   {{end}}
@@ -26,7 +27,7 @@
   <p class="empty">No machines. They appear here the moment a job is queued.</p>
 {{else}}
 <table>
-  <thead><tr><th>Machine</th><th>Pool</th><th>State</th><th>Job</th><th>Age</th><th></th></tr></thead>
+  <thead><tr><th>Machine</th><th>Pool</th><th>State</th><th>Job</th><th>Age</th><th>Billed</th><th>Cost</th><th></th></tr></thead>
   <tbody>
   {{range .Instances}}
     <tr>
@@ -34,7 +35,9 @@
       <td>{{if .Pool}}{{.Pool.Name}}{{end}}</td>
       <td><span class="state {{.State}}">{{.State}}</span></td>
       <td>{{if .JobID}}<code class="dim">{{.JobID}}</code>{{else}}<span class="muted">unbound</span>{{end}}</td>
-      <td>{{age .CreatedAt}}</td>
+      <td class="num">{{age .CreatedAt}}</td>
+      <td class="num">{{dur .BilledDuration}}</td>
+      <td class="num">{{usd .EstimatedCost}}</td>
       <td class="right">
         {{if ne .State "deleted"}}
         <form hx-post="/instances/{{.ID}}/destroy" hx-swap="none" class="inline">

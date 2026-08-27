@@ -8,6 +8,9 @@
   <dt>Job</dt><dd><code class="dim">{{.Instance.JobID}}</code></dd>
   <dt>Public IP</dt><dd>{{.Instance.PublicIP}}</dd>
   <dt>Created</dt><dd>{{ts .Instance.CreatedAt}}</dd>
+  {{if .Instance.ActiveAt}}<dt>Billing from</dt><dd>{{ts .Instance.ActiveAt}}</dd>{{end}}
+  <dt>Billed</dt><dd>{{dur .Instance.BilledDuration}}{{if .Instance.HourlyUSD}} at {{usd .Instance.HourlyUSD}}/hr{{end}}</dd>
+  <dt>Cost</dt><dd>{{usd .Instance.EstimatedCost}}</dd>
 </dl>
 {{if .Instance.Error}}<div class="flash bad">{{.Instance.Error}}</div>{{end}}
 {{if .Instance.Logs}}

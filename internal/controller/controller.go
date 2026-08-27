@@ -304,7 +304,12 @@ func (c *Controller) launch(ctx context.Context, pool *store.Pool, prov cloud.Pr
 	if err != nil {
 		return err
 	}
-	inst := &store.Instance{Name: name, PoolID: pool.ID, State: store.StatePending, JobID: jobID}
+	inst := &store.Instance{
+		Name: name, PoolID: pool.ID, State: store.StatePending, JobID: jobID,
+		// The rate is copied rather than looked up later: rates get edited, and
+		// a bill that already happened does not change.
+		HourlyUSD: hourlyRate(pool),
+	}
 	if err := c.db.WithContext(ctx).Create(inst).Error; err != nil {
 		return fmt.Errorf("record instance: %w", err)
 	}
@@ -370,6 +375,15 @@ func (c *Controller) launch(ctx context.Context, pool *store.Pool, prov cloud.Pr
 	c.db.Logf(ctx, "info", "launch", &pool.ID, &inst.ID,
 		"created %s on %s (%s)", name, pool.Cloud.Name, sizeName(pool))
 	return nil
+}
+
+// hourlyRate is what one machine in this pool costs per hour, or zero when the
+// operator has not priced the size.
+func hourlyRate(p *store.Pool) float64 {
+	if p.Size == nil {
+		return 0
+	}
+	return p.Size.HourlyUSD
 }
 
 func sizeName(p *store.Pool) string {

@@ -329,13 +329,27 @@ type Instance struct {
 	SSHKey Secret `gorm:"type:text" json:"-"`
 
 	Error string `json:"error"`
+
+	// HourlyUSD is the rate this machine was launched at, snapshotted from its
+	// size. Rates get edited; a bill that already happened does not change, so
+	// the rate is copied rather than looked up later.
+	HourlyUSD float64 `json:"hourly_usd"`
+	// BilledSeconds is how long the machine was billable, and CostUSD is what
+	// that came to. Both are set once, when the machine is destroyed.
+	BilledSeconds int     `json:"billed_seconds"`
+	CostUSD       float64 `json:"cost_usd"`
 	// Logs is a truncated tail of the machine's output, captured when it stops
 	// or fails. Without this the controller destroys the only evidence of why a
 	// run did not work.
 	Logs string `json:"logs"`
 
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	// ActiveAt is when the provider first reported the machine running. This is
+	// the point billing starts on the clouds that bill by the second — OVHcloud
+	// does not charge for time spent building — so it is the honest start for a
+	// cost figure, rather than when the row was created.
+	ActiveAt    *time.Time `json:"active_at"`
 	ReadyAt     *time.Time `json:"ready_at"`
 	ClaimedAt   *time.Time `json:"claimed_at"`
 	FinishedAt  *time.Time `json:"finished_at"`

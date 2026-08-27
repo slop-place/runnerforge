@@ -8,6 +8,12 @@ running after its job finished is a bill, which is what the reaper is for.</p>
   <div class="card"><span class="n">{{.Stats.Live}}</span><span class="l">Machines running</span></div>
   <div class="card"><span class="n">{{.Stats.Busy}}</span><span class="l">Running a job</span></div>
   <div class="card {{if .Stats.Failed}}bad{{end}}"><span class="n">{{.Stats.Failed}}</span><span class="l">Failed</span></div>
+  <div class="card">
+    <span class="n">{{usd .Stats.Spend.USD}}</span>
+    <span class="l">Spent, last 24h
+      {{if .Stats.Spend.Unpriced}}<span class="hint">{{.Stats.Spend.Unpriced}} machine(s) unpriced</span>{{end}}
+    </span>
+  </div>
 </div>
 
 <h2>Pools</h2>

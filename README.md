@@ -34,6 +34,10 @@ controller serve them:
   leaking machines and billing you for them. runnerforge asks each cloud what it
   is *actually* running rather than trusting its own database, so it can lose
   that database entirely and still clean up.
+- **The bill is on the page.** Every machine records what it cost, billed from
+  when the provider reported it running rather than from when the row was
+  created, because time spent booting is not charged. Machines still running
+  show a bill that is still growing.
 
 See [DESIGN.md](DESIGN.md) for the investigation this was built from, including
 the per-forge gotchas that shaped it.
@@ -49,6 +53,7 @@ the per-forge gotchas that shaped it.
 | Cloud: Docker (machines-as-containers) | working |
 | Controller, reaper, job binding | working |
 | Web UI (HTMX) | working |
+| Cost tracking | working |
 | Hetzner, DigitalOcean, Kubernetes drivers | not started |
 | Webhook ingestion (push instead of polling) | not started |
 

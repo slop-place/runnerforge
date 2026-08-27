@@ -58,6 +58,12 @@ const (
 	destroyTimeout = 60 * time.Second
 	// reapTimeout bounds a manual reap triggered from the UI.
 	reapTimeout = 2 * time.Minute
+	// centsThreshold is where a cost stops needing sub-cent precision. A job
+	// that lasted a minute genuinely costs less than a cent, and rounding that
+	// to $0.00 would hide the only number on the page worth watching.
+	centsThreshold = 0.01
+	// costWindow is how far back the spend figures look.
+	costWindow = 24 * time.Hour
 	// listLimit is how many rows the machine and event tables show.
 	listLimit = 50
 	// secondsPerMinute and minutesPerHour format ages in the tables.
@@ -80,7 +86,28 @@ var funcs = template.FuncMap{
 	},
 	// Timestamps are rendered in the server's local zone on purpose: this is an
 	// operator console, and an operator reads it alongside their own clock.
-	"ts":     func(t time.Time) string { return t.Local().Format("15:04:05") }, //nolint:gosmopolitan // operator-facing local time
+	"ts": func(t time.Time) string { return t.Local().Format("15:04:05") }, //nolint:gosmopolitan // operator-facing local time
+	// usd renders a cost. Sub-cent figures are the normal case for a job that
+	// lasted a minute, so they are not rounded away to $0.00.
+	"usd": func(v float64) string {
+		if v == 0 {
+			return "—"
+		}
+		if v < centsThreshold {
+			return fmt.Sprintf("$%.4f", v)
+		}
+		return fmt.Sprintf("$%.2f", v)
+	},
+	// dur renders a billed duration compactly.
+	"dur": func(d time.Duration) string {
+		if d <= 0 {
+			return "—"
+		}
+		if d < time.Minute {
+			return fmt.Sprintf("%ds", int(d.Seconds()))
+		}
+		return fmt.Sprintf("%dm%02ds", int(d.Minutes()), int(d.Seconds())%secondsPerMinute)
+	},
 	"labels": func(l store.StringList) string { return strings.Join(l, ",") },
 	// specsummary renders a driver spec as readable key=value pairs. The raw
 	// JSON was accurate and unreadable; this is what an operator scans a table
@@ -225,11 +252,16 @@ type view struct {
 	HasWebhookSecret bool
 }
 
-type stats struct{ Pools, Live, Busy, Failed int }
+type stats struct {
+	Pools, Live, Busy, Failed int
+	// Spend is what the last day has cost, machines still running included.
+	Spend store.Spend
+}
 
 type poolRow struct {
-	Pool store.Pool
-	Live int
+	Pool  store.Pool
+	Live  int
+	Spend store.Spend
 }
 
 func (s *Server) render(w http.ResponseWriter, page string, v view) {
@@ -312,6 +344,10 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	// A day is the window an operator can still do something about.
+	if sp, err := s.db.SpendSince(ctx, time.Now().Add(-costWindow)); err == nil {
+		v.Stats.Spend = sp
 	}
 	v.Stats.Pools = len(pools)
 	for _, in := range live {
@@ -836,9 +872,11 @@ func (s *Server) partialPools(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	v := view{}
+	since := time.Now().Add(-costWindow)
 	for i := range pools {
 		live, _ := s.db.LiveInstances(ctx, pools[i].ID)
-		v.Pools = append(v.Pools, poolRow{Pool: pools[i], Live: len(live)})
+		spend, _ := s.db.PoolSpendSince(ctx, pools[i].ID, since)
+		v.Pools = append(v.Pools, poolRow{Pool: pools[i], Live: len(live), Spend: spend})
 	}
 	s.renderPartial(w, "pools-table", v)
 }
