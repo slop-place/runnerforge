@@ -1,11 +1,13 @@
 {{define "content"}}
 <h1>Dashboard</h1>
+<p class="lede">One throwaway machine per job. Anything here that is still
+running after its job finished is a bill, which is what the reaper is for.</p>
 
 <div class="cards">
-  <div class="card"><span class="n">{{.Stats.Pools}}</span><span class="l">pools</span></div>
-  <div class="card"><span class="n">{{.Stats.Live}}</span><span class="l">machines running</span></div>
-  <div class="card"><span class="n">{{.Stats.Busy}}</span><span class="l">running a job</span></div>
-  <div class="card {{if .Stats.Failed}}bad{{end}}"><span class="n">{{.Stats.Failed}}</span><span class="l">failed</span></div>
+  <div class="card"><span class="n">{{.Stats.Pools}}</span><span class="l">Pools</span></div>
+  <div class="card"><span class="n">{{.Stats.Live}}</span><span class="l">Machines running</span></div>
+  <div class="card"><span class="n">{{.Stats.Busy}}</span><span class="l">Running a job</span></div>
+  <div class="card {{if .Stats.Failed}}bad{{end}}"><span class="n">{{.Stats.Failed}}</span><span class="l">Failed</span></div>
 </div>
 
 <h2>Pools</h2>
