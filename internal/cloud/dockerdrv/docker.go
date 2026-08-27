@@ -32,7 +32,55 @@ import (
 	"github.com/slop-place/runnerforge/internal/cloud"
 )
 
-func init() { cloud.Register("docker", New) }
+func init() {
+	cloud.Register(cloud.Driver{
+		Name:  "docker",
+		Title: "Docker (local containers)",
+		New:   New,
+		Schema: cloud.Schema{
+			Connection: []cloud.Field{{
+				Key:         "socket",
+				Label:       "Daemon socket",
+				Type:        cloud.FieldText,
+				Placeholder: defaultSocketPath,
+				Help: "Leave blank to use DOCKER_HOST, or the usual paths for " +
+					"Docker Desktop, OrbStack and Colima.",
+			}},
+			Size: []cloud.Field{
+				{
+					Key: "cpus", Label: "CPUs", Type: cloud.FieldNumber,
+					Placeholder: "2", Help: "Fractional cores are allowed. Blank means unlimited.",
+				},
+				{
+					Key: "memory_mb", Label: "Memory (MB)", Type: cloud.FieldNumber,
+					Placeholder: "2048", Help: "Blank means unlimited.",
+				},
+				{
+					Key: "docker_socket", Label: "Mount daemon socket", Type: cloud.FieldText,
+					Placeholder: defaultSocketPath,
+					Help: "Forgejo and GitLab runners start job containers of their own. " +
+						"Without the socket they cannot run anything.",
+				},
+				{
+					Key: "network", Label: "Container network", Type: cloud.FieldText,
+					Placeholder: "bridge",
+					Help:        "Job containers join this too, or they cannot reach the forge to clone.",
+				},
+				{
+					Key: "user", Label: "Run as user", Type: cloud.FieldText,
+					Placeholder: "0:0", Help: "Needed to use a mounted daemon socket.",
+				},
+				{Key: "privileged", Label: "Privileged", Type: cloud.FieldBool,
+					Help: "Only for jobs that build containers of their own."},
+			},
+			Image: []cloud.Field{{
+				Key: "image", Label: "Container image", Type: cloud.FieldText, Required: true,
+				Placeholder: "code.forgejo.org/forgejo/runner:12",
+				Help:        "Pulled on demand if it is not present locally.",
+			}},
+		},
+	})
+}
 
 // errNoSocket is returned when no Docker daemon socket can be located.
 var errNoSocket = errors.New("docker: no daemon socket found; set DOCKER_HOST or the socket setting")
@@ -53,6 +101,9 @@ const (
 	bytesPerMB = 1024 * 1024
 	// nanoCPUsPerCore is the unit HostConfig.NanoCpus is expressed in.
 	nanoCPUsPerCore = 1e9
+	// defaultSocketPath is where a Linux daemon listens, and the bind a
+	// container-mode runner needs to start job containers of its own.
+	defaultSocketPath = "/var/run/docker.sock"
 	// typicalContainerStart is how long a container usually takes to be usable.
 	typicalContainerStart = 2 * time.Second
 	// httpErrorFloor is the status at or above which a response is a failure.
@@ -98,7 +149,7 @@ func socketFromEnv() string {
 	}
 	home, _ := os.UserHomeDir()
 	for _, p := range []string{
-		"/var/run/docker.sock",
+		defaultSocketPath,
 		filepath.Join(home, ".orbstack/run/docker.sock"),
 		filepath.Join(home, ".docker/run/docker.sock"),
 		filepath.Join(home, ".colima/default/docker.sock"),
@@ -236,7 +287,7 @@ func applySize(hc *hostConfig, req cloud.ProvisionRequest) {
 	// Forgejo and GitLab runners execute job steps in containers of their own,
 	// so without the daemon socket a container-mode runner cannot run anything.
 	if sock := cloud.SpecString(req.SizeSpec, "docker_socket"); sock != "" {
-		hc.Binds = append(hc.Binds, sock+":/var/run/docker.sock")
+		hc.Binds = append(hc.Binds, sock+":"+defaultSocketPath)
 	}
 	if net := cloud.SpecString(req.SizeSpec, "network"); net != "" {
 		hc.NetworkMode = net

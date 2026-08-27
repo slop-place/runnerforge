@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -153,8 +154,17 @@ type BootstrapOptions struct {
 	Network string
 }
 
-// Registry maps forge kinds to constructors.
-type Registry map[Kind]func(cfg map[string]any) (Forge, error)
+// Implementation is a registered forge, and what it needs configured.
+type Implementation struct {
+	Kind  Kind
+	Title string
+	New   func(cfg map[string]any) (Forge, error)
+	// Fields drive the connection form.
+	Fields []cloud.Field
+}
+
+// Registry maps forge kinds to their registration.
+type Registry map[Kind]Implementation
 
 // forges is the process-wide forge registry, populated by each package's init.
 //
@@ -167,35 +177,44 @@ var (
 	forges   = Registry{}
 )
 
-// Register adds a forge constructor. It panics on duplicate registration, which
-// can only happen through a programming error at init time.
-func Register(k Kind, fn func(cfg map[string]any) (Forge, error)) {
+// Register adds a forge. It panics on duplicate registration, which can only
+// happen through a programming error at init time.
+func Register(impl Implementation) {
 	forgesMu.Lock()
 	defer forgesMu.Unlock()
-	if _, dup := forges[k]; dup {
-		panic("forge: registered twice: " + string(k))
+	if _, dup := forges[impl.Kind]; dup {
+		panic("forge: registered twice: " + string(impl.Kind))
 	}
-	forges[k] = fn
+	forges[impl.Kind] = impl
 }
 
-// Kinds returns the registered forge kinds, for the UI's pickers.
-func Kinds() []Kind {
+// Implementations returns every registered forge, sorted by kind, for the UI.
+func Implementations() []Implementation {
 	forgesMu.RLock()
 	defer forgesMu.RUnlock()
-	out := make([]Kind, 0, len(forges))
-	for k := range forges {
-		out = append(out, k)
+	out := make([]Implementation, 0, len(forges))
+	for _, impl := range forges {
+		out = append(out, impl)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Kind < out[j].Kind })
 	return out
+}
+
+// ByKind returns one registered forge.
+func ByKind(k Kind) (Implementation, bool) {
+	forgesMu.RLock()
+	defer forgesMu.RUnlock()
+	impl, ok := forges[k]
+	return impl, ok
 }
 
 // New constructs a forge by kind.
 func New(k Kind, cfg map[string]any) (Forge, error) {
 	forgesMu.RLock()
-	fn, ok := forges[k]
+	impl, ok := forges[k]
 	forgesMu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("unknown forge kind %q", k)
 	}
-	return fn(cfg)
+	return impl.New(cfg)
 }

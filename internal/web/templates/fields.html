@@ -1,0 +1,39 @@
+{{define "fields"}}
+{{range .}}
+  {{$t := printf "%s" .Type}}
+  {{if eq $t "bool"}}
+    <label class="check">
+      <input type="checkbox" name="{{.Name}}" {{if eq .Value "on"}}checked{{end}}>
+      <span>{{.Label}}{{if .Help}}<span class="hint">{{.Help}}</span>{{end}}</span>
+    </label>
+  {{else if eq $t "select"}}
+    <label>
+      <span class="lbl">{{.Label}}{{if .Required}}<b class="req">required</b>{{end}}</span>
+      {{if .Help}}<span class="hint">{{.Help}}</span>{{end}}
+      <select name="{{.Name}}">
+        {{if not .Opts}}<option value="">— nothing to choose from yet —</option>{{end}}
+        {{range .Opts}}
+          <option value="{{.Value}}"{{if .Selected}} selected{{end}}>
+            {{.Label}}{{if .Detail}} — {{.Detail}}{{end}}
+          </option>
+        {{end}}
+      </select>
+    </label>
+  {{else if .Secret}}
+    <label>
+      <span class="lbl">{{.Label}}{{if and .Required (not .IsSet)}}<b class="req">required</b>{{end}}</span>
+      <span class="hint">{{if .IsSet}}Stored. Leave blank to keep it.{{else}}{{.Help}}{{end}}</span>
+      <input type="password" name="{{.Name}}" autocomplete="new-password"
+             placeholder="{{if .IsSet}}••••••••{{else}}{{.Placeholder}}{{end}}">
+    </label>
+  {{else}}
+    <label>
+      <span class="lbl">{{.Label}}{{if .Required}}<b class="req">required</b>{{end}}</span>
+      {{if .Help}}<span class="hint">{{.Help}}</span>{{end}}
+      <input type="{{if eq $t "number"}}number{{else}}text{{end}}"
+             name="{{.Name}}" value="{{.Value}}" placeholder="{{.Placeholder}}"
+             {{if eq $t "number"}}step="any"{{end}}>
+    </label>
+  {{end}}
+{{end}}
+{{end}}

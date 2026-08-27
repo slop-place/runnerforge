@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/slop-place/runnerforge/internal/cloud"
 	"github.com/slop-place/runnerforge/internal/store"
 )
 
@@ -93,4 +94,12 @@ func (c *Controller) DestroyInstance(ctx context.Context, id uint) error {
 		return fmt.Errorf("destroy %s: %w", inst.Name, err)
 	}
 	return nil
+}
+
+// Provider returns a live provider for a cloud record.
+//
+// Exposed so the UI can ask a cloud what it can build with, rather than making
+// an operator look a flavor id up somewhere else and type it in.
+func (c *Controller) Provider(cl *store.Cloud) (cloud.Provider, error) {
+	return c.res.Cloud(cl)
 }

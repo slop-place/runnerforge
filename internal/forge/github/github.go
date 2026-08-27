@@ -25,7 +25,46 @@ import (
 // beyond the job timeout, so the runner has a chance to exit cleanly first.
 const shutdownGraceMinutes = 5
 
-func init() { forge.Register(forge.KindGitHub, New) }
+func init() {
+	forge.Register(forge.Implementation{
+		Kind:  forge.KindGitHub,
+		Title: "GitHub Actions",
+		New:   New,
+		Fields: []cloud.Field{
+			{
+				Key: "url", Label: "API URL", Type: cloud.FieldText,
+				Default: "https://api.github.com",
+				Help:    "Change only for GitHub Enterprise Server.",
+			},
+			{
+				Key: "scope", Label: "Scope", Type: cloud.FieldSelect, Required: true,
+				Default: scopeRepo,
+				Options: []cloud.Option{
+					{Value: scopeRepo, Label: "One repository"},
+					{Value: scopeOrg, Label: "An organisation"},
+				},
+			},
+			{Key: "owner", Label: "Owner", Type: cloud.FieldText, Required: true,
+				Placeholder: "my-org"},
+			{Key: "repo", Label: "Repository", Type: cloud.FieldText, Placeholder: "my-repo",
+				Help: "For the repo scope."},
+			{
+				Key: "runner_group_id", Label: "Runner group", Type: cloud.FieldNumber,
+				Default: "1", Help: "1 is the Default group.",
+			},
+			{
+				Key: "runner_image", Label: "Runner image", Type: cloud.FieldText,
+				Placeholder: DefaultRunnerImage,
+			},
+			{
+				Key: "token", Label: "Token", Type: cloud.FieldPassword,
+				Required: true, Secret: true,
+				Help: "A repo-scoped token is enough for the repo scope; an org scope " +
+					"needs admin:org.",
+			},
+		},
+	})
+}
 
 // GitHub talks to one GitHub installation at one scope.
 type GitHub struct {
@@ -40,6 +79,12 @@ type GitHub struct {
 // DefaultRunnerImage is the container image used for container-mode clouds.
 // This is the image GitHub's own Actions Runner Controller uses.
 const DefaultRunnerImage = "ghcr.io/actions/actions-runner:latest"
+
+// The scopes a connection can target.
+const (
+	scopeRepo = "repo"
+	scopeOrg  = "org"
+)
 
 // New builds a GitHub connection. Recognised settings:
 //
@@ -68,13 +113,13 @@ func New(cfg map[string]any) (forge.Forge, error) {
 
 	var scope string
 	switch get("scope") {
-	case "", "repo":
+	case "", scopeRepo:
 		repo := get("repo")
 		if repo == "" {
 			return nil, errors.New("github: repo scope requires repo")
 		}
 		scope = "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo)
-	case "org":
+	case scopeOrg:
 		scope = "/orgs/" + url.PathEscape(owner)
 	default:
 		return nil, fmt.Errorf("github: unknown scope %q (want repo or org)", get("scope"))

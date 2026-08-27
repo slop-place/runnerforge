@@ -1,7 +1,7 @@
 {{define "content"}}
 <h1>Clouds</h1>
-<p class="lede">A cloud is one provider account. Each carries its own catalogue of
-instance sizes and images, which pools refer to by name — so the same pool
+<p class="lede">A cloud is one provider account. Each carries its own catalogue
+of instance sizes and images, which pools refer to by name — so the same pool
 definition works on any of them.</p>
 
 <table>
@@ -11,11 +11,11 @@ definition works on any of them.</p>
     <tr class="{{if not .Enabled}}off{{end}}">
       <td><a href="/clouds/{{.ID}}">{{.Name}}</a></td>
       <td><span class="tag">{{.Driver}}</span></td>
-      <td>{{len .Sizes}}</td>
-      <td>{{len .Images}}</td>
+      <td class="num">{{len .Sizes}}</td>
+      <td class="num">{{len .Images}}</td>
       <td>
         {{if eq .Status "ok"}}<span class="ok">reachable</span>
-        {{else if .Status}}<span class="bad" title="{{.StatusDetail}}">{{.Status}}</span>
+        {{else if .Status}}<span class="bad" title="{{.StatusDetail}}">error</span>
         {{else}}<span class="muted">unchecked</span>{{end}}
       </td>
       <td class="right">
@@ -32,19 +32,29 @@ definition works on any of them.</p>
 </table>
 
 <h2>Add a cloud</h2>
-<form method="post" action="/clouds" class="form">
-  <label>Name<input name="name" required placeholder="ovh-us-east"></label>
-  <label>Driver
-    <select name="driver">
-      {{range .Drivers}}<option value="{{.}}">{{.}}</option>{{end}}
-    </select>
-  </label>
-  <label>Settings <span class="hint">JSON, driver-specific and non-secret</span>
-    <textarea name="settings" rows="4" placeholder='{"region": "US-EAST-VA-1", "auth_url": "https://auth.cloud.ovh.us/v3", "project_id": "..."}'></textarea>
-  </label>
-  <label>Credentials <span class="hint">JSON, encrypted at rest and never shown again</span>
-    <textarea name="credentials" rows="3" placeholder='{"username": "user-xxxx", "password": "..."}'></textarea>
-  </label>
-  <button>Add cloud</button>
-</form>
+{{if .Cloud}}
+  <form method="post" action="/clouds" class="form">
+    <input type="hidden" name="driver" value="{{.Cloud.Driver}}">
+    <label>
+      <span class="lbl">Name<b class="req">required</b></span>
+      <span class="hint">What you will call this account in pools.</span>
+      <input name="name" required placeholder="ovh-us-east">
+    </label>
+    {{template "fields" .Fields}}
+    <div class="actions">
+      <button>Add cloud</button>
+      <a class="ghost" href="/clouds">Cancel</a>
+    </div>
+  </form>
+{{else}}
+  <p class="lede">Pick a driver. The form asks for what that driver actually needs.</p>
+  <div class="picker">
+    {{range .CloudDrivers}}
+      <a class="pick" href="/clouds?driver={{.Name}}">
+        <span class="pick-name">{{.Title}}</span>
+        <span class="pick-key">{{.Name}}</span>
+      </a>
+    {{end}}
+  </div>
+{{end}}
 {{end}}

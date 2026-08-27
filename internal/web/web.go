@@ -25,6 +25,7 @@ import (
 	"github.com/slop-place/runnerforge/internal/cloud"
 	"github.com/slop-place/runnerforge/internal/config"
 	"github.com/slop-place/runnerforge/internal/controller"
+	"github.com/slop-place/runnerforge/internal/forge"
 	"github.com/slop-place/runnerforge/internal/store"
 )
 
@@ -81,12 +82,23 @@ var funcs = template.FuncMap{
 	// operator console, and an operator reads it alongside their own clock.
 	"ts":     func(t time.Time) string { return t.Local().Format("15:04:05") }, //nolint:gosmopolitan // operator-facing local time
 	"labels": func(l store.StringList) string { return strings.Join(l, ",") },
-	"specjson": func(p store.Params) string {
-		b, err := json.Marshal(p)
-		if err != nil {
-			return ""
+	// specsummary renders a driver spec as readable key=value pairs. The raw
+	// JSON was accurate and unreadable; this is what an operator scans a table
+	// for.
+	"specsummary": func(p store.Params) string {
+		if len(p) == 0 {
+			return "—"
 		}
-		return string(b)
+		keys := make([]string, 0, len(p))
+		for k := range p {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, k := range keys {
+			parts = append(parts, k+"="+paramString(p, k))
+		}
+		return strings.Join(parts, "  ")
 	},
 	// scope renders a forge's target compactly for the list view.
 	"scope": func(p store.Params) string {
@@ -115,7 +127,8 @@ func mustParse() map[string]*template.Template {
 	out := map[string]*template.Template{}
 	for _, p := range pages {
 		t := template.Must(template.New(p).Funcs(funcs).ParseFS(templateFS,
-			"templates/layout.html", "templates/partials.html", "templates/"+p+".html"))
+			"templates/layout.html", "templates/partials.html",
+			"templates/fields.html", "templates/"+p+".html"))
 		out[p] = t
 	}
 	// Partials render on their own, without a layout.
@@ -188,15 +201,22 @@ type view struct {
 	Pools     []poolRow
 	Instances []store.Instance
 	Events    []store.Event
-	Drivers   []string
 
-	Cloud        *store.Cloud
-	Forge        *store.Forge
-	Pool         *store.Pool
-	Instance     *store.Instance
-	SettingsJSON string
-	HasCreds     bool
-	CredKeys     string
+	Cloud    *store.Cloud
+	Forge    *store.Forge
+	Pool     *store.Pool
+	Instance *store.Instance
+
+	// Fields are the driver-declared inputs for the record being edited.
+	Fields []renderField
+	// SizeFields and ImageFields drive the catalogue editors.
+	SizeFields  []renderField
+	ImageFields []renderField
+	// CatalogErr explains why the pickers are empty, when they are.
+	CatalogErr string
+
+	CloudDrivers []cloud.Driver
+	ForgeKinds   []forge.Implementation
 
 	Sizes  []store.Size
 	Images []store.Image
@@ -316,34 +336,45 @@ func (s *Server) clouds(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	v.Drivers = cloud.DriverNames()
+	v.CloudDrivers = cloud.Drivers()
+	// The connection form is driver-specific, so it appears once a driver is
+	// picked rather than as a JSON textarea that works for none of them.
+	if d := r.URL.Query().Get("driver"); d != "" {
+		if drv, ok := cloud.DriverByName(d); ok {
+			v.Fields = buildFields(drv.Schema.Connection, nil, nil)
+			v.Cloud = &store.Cloud{Driver: d}
+		}
+	}
 	s.render(w, "clouds", v)
 }
 
 func (s *Server) createCloud(w http.ResponseWriter, r *http.Request) {
-	settings, err := parseParams(r.FormValue("settings"))
-	if err != nil {
-		s.fail(w, r, "/clouds", fmt.Errorf("settings: %w", err))
+	driver := r.FormValue("driver")
+	drv, ok := cloud.DriverByName(driver)
+	if !ok {
+		s.fail(w, r, "/clouds", fmt.Errorf("unknown driver %q", driver))
 		return
 	}
-	creds, err := parseSecret(r.FormValue("credentials"))
+	back := "/clouds?driver=" + url.QueryEscape(driver)
+
+	settings, creds, err := collectFields(r, drv.Schema.Connection, nil)
 	if err != nil {
-		s.fail(w, r, "/clouds", fmt.Errorf("credentials: %w", err))
+		s.fail(w, r, back, err)
 		return
 	}
 	c := &store.Cloud{
-		Name: strings.TrimSpace(r.FormValue("name")), Driver: r.FormValue("driver"),
+		Name: strings.TrimSpace(r.FormValue("name")), Driver: driver,
 		Enabled: true, Settings: settings, Credentials: creds,
 	}
-	if !cloud.HasDriver(c.Driver) {
-		s.fail(w, r, "/clouds", fmt.Errorf("unknown driver %q", c.Driver))
+	if c.Name == "" {
+		s.fail(w, r, back, errNameRequired)
 		return
 	}
 	if err := s.db.WithContext(r.Context()).Create(c).Error; err != nil {
-		s.fail(w, r, "/clouds", err)
+		s.fail(w, r, back, err)
 		return
 	}
-	http.Redirect(w, r, internalRedirect(fmt.Sprintf("/clouds/%d", c.ID), "", ""), http.StatusSeeOther)
+	s.redirect(w, r, fmt.Sprintf("/clouds/%d", c.ID), "", "")
 }
 
 func (s *Server) editCloud(w http.ResponseWriter, r *http.Request) {
@@ -352,11 +383,25 @@ func (s *Server) editCloud(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	drv, ok := cloud.DriverByName(c.Driver)
+	if !ok {
+		s.fail(w, r, "/clouds", fmt.Errorf("unknown driver %q", c.Driver))
+		return
+	}
 	v := s.base(r, c.Name, "clouds")
 	v.Cloud = c
-	v.SettingsJSON = prettyJSON(c.Settings)
-	v.HasCreds = len(c.Credentials) > 0
-	v.CredKeys = strings.Join(sortedKeys(c.Credentials), ", ")
+	v.Fields = buildFields(drv.Schema.Connection, c.Settings, c.Credentials)
+	v.SizeFields = buildFields(drv.Schema.Size, nil, nil)
+	v.ImageFields = buildFields(drv.Schema.Image, nil, nil)
+
+	// A driver that can list what the account offers turns the flavor and
+	// image inputs into pickers of real values.
+	if flavors, images, err := s.catalog(r.Context(), c); err != nil {
+		v.CatalogErr = err.Error()
+	} else {
+		v.SizeFields = withCatalog(v.SizeFields, "flavor", flavors)
+		v.ImageFields = withCatalog(v.ImageFields, "id", images)
+	}
 	s.render(w, "cloud_edit", v)
 }
 
@@ -368,24 +413,22 @@ func (s *Server) updateCloud(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	self := fmt.Sprintf("/clouds/%d", c.ID)
-	settings, err := parseParams(r.FormValue("settings"))
+	drv, ok := cloud.DriverByName(c.Driver)
+	if !ok {
+		s.fail(w, r, "/clouds", fmt.Errorf("unknown driver %q", c.Driver))
+		return
+	}
+	// Existing credentials are passed in so a field left blank keeps its
+	// stored value rather than erasing a secret nobody could see.
+	settings, creds, err := collectFields(r, drv.Schema.Connection, c.Credentials)
 	if err != nil {
-		s.fail(w, r, self, fmt.Errorf("settings: %w", err))
+		s.fail(w, r, self, err)
 		return
 	}
 	c.Name = strings.TrimSpace(r.FormValue("name"))
 	c.Enabled = r.FormValue("enabled") != ""
 	c.Settings = settings
-	// Blank credentials means "keep what is stored", so an operator editing a
-	// region does not have to re-enter a secret they cannot see.
-	if raw := strings.TrimSpace(r.FormValue("credentials")); raw != "" && raw != "{}" {
-		creds, err := parseSecret(raw)
-		if err != nil {
-			s.fail(w, r, self, fmt.Errorf("credentials: %w", err))
-			return
-		}
-		c.Credentials = creds
-	}
+	c.Credentials = creds
 	if err := s.db.WithContext(ctx).Save(c).Error; err != nil {
 		s.fail(w, r, self, err)
 		return
@@ -425,9 +468,9 @@ func (s *Server) checkCloud(w http.ResponseWriter, r *http.Request) {
 func (s *Server) createSize(w http.ResponseWriter, r *http.Request) {
 	cloudID := pathID(r)
 	self := fmt.Sprintf("/clouds/%d", cloudID)
-	spec, err := parseParams(r.FormValue("spec"))
+	spec, err := s.specFromForm(r, cloudID, func(sc cloud.Schema) []cloud.Field { return sc.Size })
 	if err != nil {
-		s.fail(w, r, self, fmt.Errorf("spec: %w", err))
+		s.fail(w, r, self, err)
 		return
 	}
 	hourly, _ := strconv.ParseFloat(r.FormValue("hourly_usd"), 64)
@@ -435,6 +478,10 @@ func (s *Server) createSize(w http.ResponseWriter, r *http.Request) {
 		CloudID: cloudID, Name: strings.TrimSpace(r.FormValue("name")), Spec: spec,
 		VCPUs: atoi(r.FormValue("vcpus")), MemoryMB: atoi(r.FormValue("memory_mb")),
 		HourlyUSD: hourly,
+	}
+	if sz.Name == "" {
+		s.fail(w, r, self, errNameRequired)
+		return
 	}
 	if err := s.db.WithContext(r.Context()).Create(sz).Error; err != nil {
 		s.fail(w, r, self, err)
@@ -446,15 +493,19 @@ func (s *Server) createSize(w http.ResponseWriter, r *http.Request) {
 func (s *Server) createImage(w http.ResponseWriter, r *http.Request) {
 	cloudID := pathID(r)
 	self := fmt.Sprintf("/clouds/%d", cloudID)
-	spec, err := parseParams(r.FormValue("spec"))
+	spec, err := s.specFromForm(r, cloudID, func(sc cloud.Schema) []cloud.Field { return sc.Image })
 	if err != nil {
-		s.fail(w, r, self, fmt.Errorf("spec: %w", err))
+		s.fail(w, r, self, err)
 		return
 	}
 	img := &store.Image{
 		CloudID: cloudID, Name: strings.TrimSpace(r.FormValue("name")), Spec: spec,
 		Username:           strings.TrimSpace(r.FormValue("username")),
 		PreinstalledDocker: r.FormValue("preinstalled_docker") != "",
+	}
+	if img.Name == "" {
+		s.fail(w, r, self, errNameRequired)
+		return
 	}
 	if err := s.db.WithContext(r.Context()).Create(img).Error; err != nil {
 		s.fail(w, r, self, err)
@@ -482,29 +533,43 @@ func (s *Server) forges(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	v.ForgeKinds = forge.Implementations()
+	if k := r.URL.Query().Get("kind"); k != "" {
+		if impl, ok := forge.ByKind(forge.Kind(k)); ok {
+			v.Fields = buildFields(impl.Fields, nil, nil)
+			v.Forge = &store.Forge{Kind: k}
+		}
+	}
 	s.render(w, "forges", v)
 }
 
 func (s *Server) createForge(w http.ResponseWriter, r *http.Request) {
-	settings, err := parseParams(r.FormValue("settings"))
-	if err != nil {
-		s.fail(w, r, "/forges", fmt.Errorf("settings: %w", err))
+	kind := r.FormValue("kind")
+	impl, ok := forge.ByKind(forge.Kind(kind))
+	if !ok {
+		s.fail(w, r, "/forges", fmt.Errorf("unknown forge kind %q", kind))
 		return
 	}
-	creds, err := parseSecret(r.FormValue("credentials"))
+	back := "/forges?kind=" + url.QueryEscape(kind)
+
+	settings, creds, err := collectFields(r, impl.Fields, nil)
 	if err != nil {
-		s.fail(w, r, "/forges", fmt.Errorf("credentials: %w", err))
+		s.fail(w, r, back, err)
 		return
 	}
 	f := &store.Forge{
-		Name: strings.TrimSpace(r.FormValue("name")), Kind: r.FormValue("kind"),
+		Name: strings.TrimSpace(r.FormValue("name")), Kind: kind,
 		Enabled: true, Settings: settings, Credentials: creds,
 	}
-	if err := s.db.WithContext(r.Context()).Create(f).Error; err != nil {
-		s.fail(w, r, "/forges", err)
+	if f.Name == "" {
+		s.fail(w, r, back, errNameRequired)
 		return
 	}
-	http.Redirect(w, r, internalRedirect(fmt.Sprintf("/forges/%d", f.ID), "", ""), http.StatusSeeOther)
+	if err := s.db.WithContext(r.Context()).Create(f).Error; err != nil {
+		s.fail(w, r, back, err)
+		return
+	}
+	s.redirect(w, r, fmt.Sprintf("/forges/%d", f.ID), "", "")
 }
 
 func (s *Server) editForge(w http.ResponseWriter, r *http.Request) {
@@ -513,11 +578,14 @@ func (s *Server) editForge(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	impl, ok := forge.ByKind(forge.Kind(f.Kind))
+	if !ok {
+		s.fail(w, r, "/forges", fmt.Errorf("unknown forge kind %q", f.Kind))
+		return
+	}
 	v := s.base(r, f.Name, "forges")
 	v.Forge = f
-	v.SettingsJSON = prettyJSON(f.Settings)
-	v.HasCreds = len(f.Credentials) > 0
-	v.CredKeys = strings.Join(sortedKeys(f.Credentials), ", ")
+	v.Fields = buildFields(impl.Fields, f.Settings, f.Credentials)
 	v.HasWebhookSecret = len(f.WebhookSecret) > 0
 	if s.cfg.BaseURL != "" {
 		v.WebhookURL = strings.TrimRight(s.cfg.BaseURL, "/") + "/webhooks/" + strconv.Itoa(int(f.ID))
@@ -533,22 +601,20 @@ func (s *Server) updateForge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	self := fmt.Sprintf("/forges/%d", f.ID)
-	settings, err := parseParams(r.FormValue("settings"))
+	impl, ok := forge.ByKind(forge.Kind(f.Kind))
+	if !ok {
+		s.fail(w, r, "/forges", fmt.Errorf("unknown forge kind %q", f.Kind))
+		return
+	}
+	settings, creds, err := collectFields(r, impl.Fields, f.Credentials)
 	if err != nil {
-		s.fail(w, r, self, fmt.Errorf("settings: %w", err))
+		s.fail(w, r, self, err)
 		return
 	}
 	f.Name = strings.TrimSpace(r.FormValue("name"))
 	f.Enabled = r.FormValue("enabled") != ""
 	f.Settings = settings
-	if raw := strings.TrimSpace(r.FormValue("credentials")); raw != "" && raw != "{}" {
-		creds, err := parseSecret(raw)
-		if err != nil {
-			s.fail(w, r, self, fmt.Errorf("credentials: %w", err))
-			return
-		}
-		f.Credentials = creds
-	}
+	f.Credentials = creds
 	if ws := strings.TrimSpace(r.FormValue("webhook_secret")); ws != "" {
 		f.WebhookSecret = store.Secret{"secret": ws}
 	}
@@ -851,24 +917,4 @@ func parseSecret(raw string) (store.Secret, error) {
 		return nil, fmt.Errorf("not valid JSON (expected an object of string values): %w", err)
 	}
 	return s, nil
-}
-
-func prettyJSON(p store.Params) string {
-	if len(p) == 0 {
-		return "{}"
-	}
-	b, err := json.MarshalIndent(p, "", "  ")
-	if err != nil {
-		return "{}"
-	}
-	return string(b)
-}
-
-func sortedKeys(s store.Secret) []string {
-	out := make([]string, 0, len(s))
-	for k := range s {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }

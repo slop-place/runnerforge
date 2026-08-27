@@ -270,8 +270,21 @@ type LogProvider interface {
 	Logs(ctx context.Context, id string, tail int) (string, error)
 }
 
-// Registry maps driver names to constructors so config can name a driver.
-type Registry map[string]func(cfg map[string]any) (Provider, error)
+// Driver is a registered cloud backend: how to build one, and what it needs
+// configured.
+type Driver struct {
+	// Name is how config and the UI refer to this driver.
+	Name string
+	// Title is the human-readable name shown in the UI.
+	Title string
+	// New builds a provider from a settings map.
+	New func(cfg map[string]any) (Provider, error)
+	// Schema drives the configuration forms.
+	Schema Schema
+}
+
+// Registry maps driver names to their registration.
+type Registry map[string]Driver
 
 // drivers is the process-wide driver registry, populated by each driver's init.
 //
@@ -284,15 +297,35 @@ var (
 	drivers   = Registry{}
 )
 
-// Register adds a driver constructor. It panics on duplicate registration,
-// which can only happen through a programming error at init time.
-func Register(name string, fn func(cfg map[string]any) (Provider, error)) {
+// Register adds a driver. It panics on duplicate registration, which can only
+// happen through a programming error at init time.
+func Register(d Driver) {
 	driversMu.Lock()
 	defer driversMu.Unlock()
-	if _, dup := drivers[name]; dup {
-		panic("cloud: driver registered twice: " + name)
+	if _, dup := drivers[d.Name]; dup {
+		panic("cloud: driver registered twice: " + d.Name)
 	}
-	drivers[name] = fn
+	drivers[d.Name] = d
+}
+
+// DriverByName returns a registered driver.
+func DriverByName(name string) (Driver, bool) {
+	driversMu.RLock()
+	defer driversMu.RUnlock()
+	d, ok := drivers[name]
+	return d, ok
+}
+
+// Drivers returns every registered driver, sorted by name, for the UI.
+func Drivers() []Driver {
+	driversMu.RLock()
+	defer driversMu.RUnlock()
+	out := make([]Driver, 0, len(drivers))
+	for _, d := range drivers {
+		out = append(out, d)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // DriverNames returns the registered driver names in sorted order, for the
@@ -319,10 +352,10 @@ func HasDriver(name string) bool {
 // New constructs a provider by driver name.
 func New(name string, cfg map[string]any) (Provider, error) {
 	driversMu.RLock()
-	fn, ok := drivers[name]
+	d, ok := drivers[name]
 	driversMu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("unknown cloud driver %q", name)
 	}
-	return fn(cfg)
+	return d.New(cfg)
 }

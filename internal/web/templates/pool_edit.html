@@ -1,16 +1,16 @@
 {{define "content"}}
 <h1>{{.Pool.Name}}</h1>
 <form method="post" action="/pools/{{.Pool.ID}}" class="form">
-  <label>Name<input name="name" value="{{.Pool.Name}}" required></label>
-  <label class="check"><input type="checkbox" name="enabled" {{if .Pool.Enabled}}checked{{end}}> Enabled</label>
-  <label>Labels<input name="labels" value="{{labels .Pool.Labels}}" required></label>
-  <label>Max machines<input name="max_instances" type="number" min="1" value="{{.Pool.MaxInstances}}"></label>
-  <label>Min idle<input name="min_idle" type="number" min="0" value="{{.Pool.MinIdle}}"></label>
-  <label>Job timeout (s)<input name="job_timeout_sec" type="number" min="60" value="{{.Pool.JobTimeoutSec}}"></label>
-  <label>Max lifetime (s)<input name="max_lifetime_sec" type="number" min="120" value="{{.Pool.MaxLifetimeSec}}"></label>
-  <label>Container image<input name="container_image" value="{{.Pool.ContainerImage}}"></label>
-  <label class="check"><input type="checkbox" name="public_ipv4" {{if .Pool.PublicIPv4}}checked{{end}}> Public IPv4</label>
-  <button>Save</button>
-  <a class="ghost danger" href="/pools/{{.Pool.ID}}/delete">Delete pool</a>
+  <label><span class="lbl">Name</span><input name="name" value="{{.Pool.Name}}" required></label>
+  <label class="check"><input type="checkbox" name="enabled" {{if .Pool.Enabled}}checked{{end}}><span>Enabled</span></label>
+  <label><span class="lbl">Labels</span><input name="labels" value="{{labels .Pool.Labels}}" required></label>
+  <label><span class="lbl">Max machines</span><input name="max_instances" type="number" min="1" value="{{.Pool.MaxInstances}}"></label>
+  <label><span class="lbl">Min idle</span><input name="min_idle" type="number" min="0" value="{{.Pool.MinIdle}}"></label>
+  <label><span class="lbl">Job timeout (s)</span><input name="job_timeout_sec" type="number" min="60" value="{{.Pool.JobTimeoutSec}}"></label>
+  <label><span class="lbl">Max lifetime (s)</span><input name="max_lifetime_sec" type="number" min="120" value="{{.Pool.MaxLifetimeSec}}"></label>
+  <label><span class="lbl">Container image</span><input name="container_image" value="{{.Pool.ContainerImage}}"></label>
+  <label class="check"><input type="checkbox" name="public_ipv4" {{if .Pool.PublicIPv4}}checked{{end}}><span>Public IPv4</span></label>
+  <div class="actions"><button>Save</button>
+  <a class="ghost danger" href="/pools/{{.Pool.ID}}/delete">Delete pool</a></div>
 </form>
 {{end}}

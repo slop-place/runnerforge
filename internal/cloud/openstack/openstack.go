@@ -30,7 +30,61 @@ import (
 	"github.com/slop-place/runnerforge/internal/cloud"
 )
 
-func init() { cloud.Register("openstack", New) }
+func init() {
+	cloud.Register(cloud.Driver{
+		Name:  "openstack",
+		Title: "OpenStack / OVHcloud",
+		New:   New,
+		Schema: cloud.Schema{
+			Connection: []cloud.Field{
+				{
+					Key: "auth_url", Label: "Keystone endpoint", Type: cloud.FieldText, Required: true,
+					Placeholder: "https://auth.cloud.ovh.us/v3",
+					Help: "OVHcloud's is per brand, not global: auth.cloud.ovh.us for US " +
+						"projects, auth.cloud.ovh.net for EU.",
+				},
+				{
+					Key: "region", Label: "Region", Type: cloud.FieldText, Required: true,
+					Placeholder: "US-EAST-VA-1",
+				},
+				{
+					Key: "project_id", Label: "Project ID", Type: cloud.FieldText, Required: true,
+					Placeholder: "32 hex characters",
+					Help:        "The tenant these machines are billed to. Use a disposable project.",
+				},
+				{
+					Key: "domain", Label: "Domain", Type: cloud.FieldText,
+					Default: "Default", Help: "Leave as Default unless your cloud says otherwise.",
+				},
+				{
+					Key: "network", Label: "Network", Type: cloud.FieldText,
+					Default: "Ext-Net",
+					Help:    "Name or UUID. OVHcloud's public network is called Ext-Net.",
+				},
+				{
+					Key: "username", Label: "OpenStack user", Type: cloud.FieldText,
+					Required: true, Secret: true, Placeholder: "user-xxxxxxxx",
+				},
+				{
+					Key: "password", Label: "Password", Type: cloud.FieldPassword,
+					Required: true, Secret: true,
+				},
+			},
+			Size: []cloud.Field{{
+				Key: "flavor", Label: "Flavor", Type: cloud.FieldSelect, Required: true,
+				Help: "The machine type. Loaded from the account once its credentials work.",
+			}},
+			Image: []cloud.Field{{
+				Key: "id", Label: "Image", Type: cloud.FieldSelect, Required: true,
+				Help: "Loaded from the account once its credentials work.",
+			}},
+		},
+	})
+}
+
+// errNoImageService is returned when the cloud exposes no Glance endpoint, so
+// the image catalogue cannot be listed.
+var errNoImageService = errors.New("openstack: this cloud exposes no image service")
 
 const (
 	// authTimeout bounds the initial Keystone handshake.
@@ -56,7 +110,10 @@ var uuidDashPositions = [4]int{8, 13, 18, 23}
 type Driver struct {
 	compute *gophercloud.ServiceClient
 	network *gophercloud.ServiceClient
-	region  string
+	// image is Glance, used only to list the image catalogue for the UI. It is
+	// optional: a cloud that does not expose it can still boot machines.
+	image  *gophercloud.ServiceClient
+	region string
 	// defaultNetwork is attached when a size does not name one. OVHcloud calls
 	// its public network "Ext-Net".
 	defaultNetwork string
@@ -125,9 +182,17 @@ func New(cfg map[string]any) (cloud.Provider, error) {
 		return nil, fmt.Errorf("openstack: network endpoint for region %q: %w", get("region"), err)
 	}
 
+	// Glance is best-effort: it powers the image picker, and a cloud without it
+	// simply falls back to an operator supplying the id.
+	img, err := gopenstack.NewImageV2(provider, gophercloud.EndpointOpts{Region: get("region")})
+	if err != nil {
+		img = nil
+	}
+
 	return &Driver{
 		compute:        compute,
 		network:        net,
+		image:          img,
 		region:         get("region"),
 		defaultNetwork: network,
 		netIDs:         map[string]string{},

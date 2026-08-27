@@ -2,32 +2,38 @@
 <h1>{{.Cloud.Name}} <span class="tag">{{.Cloud.Driver}}</span></h1>
 
 <form method="post" action="/clouds/{{.Cloud.ID}}" class="form">
-  <label>Name<input name="name" value="{{.Cloud.Name}}" required></label>
-  <label class="check"><input type="checkbox" name="enabled" {{if .Cloud.Enabled}}checked{{end}}> Enabled</label>
-  <label>Settings <span class="hint">JSON</span>
-    <textarea name="settings" rows="5">{{.SettingsJSON}}</textarea>
+  <label>
+    <span class="lbl">Name</span>
+    <input name="name" value="{{.Cloud.Name}}" required>
   </label>
-  <label>Credentials <span class="hint">leave blank to keep the stored values{{if .HasCreds}} ({{.CredKeys}}){{end}}</span>
-    <textarea name="credentials" rows="3" placeholder="{}"></textarea>
+  <label class="check">
+    <input type="checkbox" name="enabled" {{if .Cloud.Enabled}}checked{{end}}>
+    <span>Enabled<span class="hint">A disabled cloud is still swept by the reaper.</span></span>
   </label>
-  <button>Save</button>
-  <a class="ghost danger" href="/clouds/{{.Cloud.ID}}/delete">Delete cloud</a>
+  {{template "fields" .Fields}}
+  <div class="actions">
+    <button>Save</button>
+    <a class="ghost danger" href="/clouds/{{.Cloud.ID}}/delete">Delete cloud</a>
+  </div>
 </form>
 
 <h2>Instance sizes</h2>
-<p class="lede">Pools ask for a size by name. What that name means is defined here,
-per cloud, so <code>large</code> can be a <code>c3-8</code> on one provider and a
-<code>cpx41</code> on another.</p>
+<p class="lede">Pools ask for a size by name. What that name means is defined
+here, per cloud, so <code>large</code> can be a <code>c3-8</code> on one
+provider and a <code>cpx41</code> on another.</p>
+{{if .CatalogErr}}
+  <p class="note">Pickers are unavailable: {{.CatalogErr}}</p>
+{{end}}
 <table>
   <thead><tr><th>Name</th><th>Spec</th><th>vCPU</th><th>RAM</th><th>$/hr</th><th></th></tr></thead>
   <tbody>
   {{range .Cloud.Sizes}}
     <tr>
       <td><b>{{.Name}}</b></td>
-      <td><code class="dim">{{specjson .Spec}}</code></td>
-      <td>{{.VCPUs}}</td>
-      <td>{{if .MemoryMB}}{{.MemoryMB}} MB{{end}}</td>
-      <td>{{if .HourlyUSD}}{{printf "%.4f" .HourlyUSD}}{{end}}</td>
+      <td><code class="dim">{{specsummary .Spec}}</code></td>
+      <td class="num">{{if .VCPUs}}{{.VCPUs}}{{end}}</td>
+      <td class="num">{{if .MemoryMB}}{{.MemoryMB}} MB{{end}}</td>
+      <td class="num">{{if .HourlyUSD}}{{printf "%.4f" .HourlyUSD}}{{end}}</td>
       <td class="right">
         <form hx-post="/sizes/{{.ID}}/delete" hx-target="closest tr" hx-swap="delete" class="inline">
           <button class="ghost danger">remove</button>
@@ -39,25 +45,31 @@ per cloud, so <code>large</code> can be a <code>c3-8</code> on one provider and 
   {{end}}
   </tbody>
 </table>
-<form method="post" action="/clouds/{{.Cloud.ID}}/sizes" class="form row">
-  <label>Name<input name="name" required placeholder="large"></label>
-  <label>Spec <span class="hint">JSON</span><input name="spec" required placeholder='{"flavor": "c3-8"}'></label>
-  <label>vCPU<input name="vcpus" type="number" min="0" placeholder="4"></label>
-  <label>RAM MB<input name="memory_mb" type="number" min="0" placeholder="8192"></label>
-  <label>$/hr<input name="hourly_usd" type="text" placeholder="0.0740"></label>
-  <button>Add size</button>
+<form method="post" action="/clouds/{{.Cloud.ID}}/sizes" class="form">
+  <label>
+    <span class="lbl">Name<b class="req">required</b></span>
+    <span class="hint">What pools will ask for: small, large, gpu.</span>
+    <input name="name" required placeholder="large">
+  </label>
+  {{template "fields" .SizeFields}}
+  <div class="grid-3">
+    <label><span class="lbl">vCPU</span><span class="hint">For display</span><input name="vcpus" type="number" min="0"></label>
+    <label><span class="lbl">RAM MB</span><span class="hint">For display</span><input name="memory_mb" type="number" min="0"></label>
+    <label><span class="lbl">$/hr</span><span class="hint">For cost display</span><input name="hourly_usd" type="text" placeholder="0.0740"></label>
+  </div>
+  <div class="actions"><button>Add size</button></div>
 </form>
 
 <h2>Images</h2>
 <table>
-  <thead><tr><th>Name</th><th>Spec</th><th>Login user</th><th>Docker preinstalled</th><th></th></tr></thead>
+  <thead><tr><th>Name</th><th>Spec</th><th>Login user</th><th>Docker</th><th></th></tr></thead>
   <tbody>
   {{range .Cloud.Images}}
     <tr>
       <td><b>{{.Name}}</b></td>
-      <td><code class="dim">{{specjson .Spec}}</code></td>
+      <td><code class="dim">{{specsummary .Spec}}</code></td>
       <td>{{.Username}}</td>
-      <td>{{if .PreinstalledDocker}}yes{{else}}no{{end}}</td>
+      <td>{{if .PreinstalledDocker}}preinstalled{{else}}installed at boot{{end}}</td>
       <td class="right">
         <form hx-post="/images/{{.ID}}/delete" hx-target="closest tr" hx-swap="delete" class="inline">
           <button class="ghost danger">remove</button>
@@ -69,11 +81,22 @@ per cloud, so <code>large</code> can be a <code>c3-8</code> on one provider and 
   {{end}}
   </tbody>
 </table>
-<form method="post" action="/clouds/{{.Cloud.ID}}/images" class="form row">
-  <label>Name<input name="name" required placeholder="ci-base"></label>
-  <label>Spec <span class="hint">JSON</span><input name="spec" required placeholder='{"id": "22ef146b-..."}'></label>
-  <label>Login user<input name="username" placeholder="debian"></label>
-  <label class="check"><input type="checkbox" name="preinstalled_docker"> Docker preinstalled</label>
-  <button>Add image</button>
+<form method="post" action="/clouds/{{.Cloud.ID}}/images" class="form">
+  <label>
+    <span class="lbl">Name<b class="req">required</b></span>
+    <span class="hint">What pools will ask for.</span>
+    <input name="name" required placeholder="ci-base">
+  </label>
+  {{template "fields" .ImageFields}}
+  <label>
+    <span class="lbl">Login user</span>
+    <span class="hint">The account cloud-init creates. Only needed for the SSH path.</span>
+    <input name="username" placeholder="debian">
+  </label>
+  <label class="check">
+    <input type="checkbox" name="preinstalled_docker">
+    <span>Docker preinstalled<span class="hint">Lets the bootstrap skip a slow install.</span></span>
+  </label>
+  <div class="actions"><button>Add image</button></div>
 </form>
 {{end}}

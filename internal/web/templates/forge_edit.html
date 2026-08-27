@@ -1,24 +1,29 @@
 {{define "content"}}
 <h1>{{.Forge.Name}} <span class="tag">{{.Forge.Kind}}</span></h1>
 {{if .WebhookURL}}
-<p class="lede">Webhook endpoint for this forge:
-  <code>{{.WebhookURL}}</code>
-  {{if .HasWebhookSecret}}<span class="ok">secret set</span>{{else}}<span class="muted">no secret set — deliveries will be rejected</span>{{end}}
+<p class="note">Webhook endpoint: <code>{{.WebhookURL}}</code>
+  {{if .HasWebhookSecret}}<span class="ok">secret set</span>
+  {{else}}<span class="muted">no secret set — deliveries will be rejected</span>{{end}}
 </p>
 {{end}}
 <form method="post" action="/forges/{{.Forge.ID}}" class="form">
-  <label>Name<input name="name" value="{{.Forge.Name}}" required></label>
-  <label class="check"><input type="checkbox" name="enabled" {{if .Forge.Enabled}}checked{{end}}> Enabled</label>
-  <label>Settings <span class="hint">JSON</span>
-    <textarea name="settings" rows="6">{{.SettingsJSON}}</textarea>
+  <label>
+    <span class="lbl">Name</span>
+    <input name="name" value="{{.Forge.Name}}" required>
   </label>
-  <label>Credentials <span class="hint">leave blank to keep the stored values{{if .HasCreds}} ({{.CredKeys}}){{end}}</span>
-    <textarea name="credentials" rows="2" placeholder="{}"></textarea>
+  <label class="check">
+    <input type="checkbox" name="enabled" {{if .Forge.Enabled}}checked{{end}}>
+    <span>Enabled</span>
   </label>
-  <label>Webhook secret <span class="hint">leave blank to keep</span>
-    <input name="webhook_secret" type="password" placeholder="••••••••">
+  {{template "fields" .Fields}}
+  <label>
+    <span class="lbl">Webhook secret</span>
+    <span class="hint">Leave blank to keep the stored one.</span>
+    <input name="webhook_secret" type="password" placeholder="{{if .HasWebhookSecret}}••••••••{{end}}">
   </label>
-  <button>Save</button>
-  <a class="ghost danger" href="/forges/{{.Forge.ID}}/delete">Delete forge</a>
+  <div class="actions">
+    <button>Save</button>
+    <a class="ghost danger" href="/forges/{{.Forge.ID}}/delete">Delete forge</a>
+  </div>
 </form>
 {{end}}

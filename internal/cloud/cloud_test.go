@@ -133,7 +133,7 @@ func TestRegistryIsConcurrencySafe(t *testing.T) {
 	go func() {
 		defer close(done)
 		for range 200 {
-			_ = cloud.DriverNames()
+			_ = cloud.Drivers()
 			_ = cloud.HasDriver("docker")
 		}
 	}()
@@ -143,44 +143,63 @@ func TestRegistryIsConcurrencySafe(t *testing.T) {
 	<-done
 }
 
-func TestDriverNamesIsSorted(t *testing.T) {
+func TestDriversAreSorted(t *testing.T) {
 	t.Parallel()
-	names := cloud.DriverNames()
-	for i := 1; i < len(names); i++ {
-		if names[i-1] > names[i] {
-			t.Fatalf("DriverNames is not sorted: %v", names)
+	// The UI renders them in this order, and a picker that reshuffles between
+	// page loads is disorienting.
+	all := cloud.Drivers()
+	for i := 1; i < len(all); i++ {
+		if all[i-1].Name > all[i].Name {
+			t.Fatalf("Drivers() is not sorted: %v", all)
 		}
 	}
 }
 
 func TestRegisterAndNew(t *testing.T) {
 	name := "test-driver-registration"
-	cloud.Register(name, func(cfg map[string]any) (cloud.Provider, error) {
-		if cfg["fail"] == true {
+	cloud.Register(cloud.Driver{
+		Name:  name,
+		Title: "Test driver",
+		New: func(map[string]any) (cloud.Provider, error) {
+			// This stub never builds a provider; New's success path is covered
+			// by the real drivers' own tests.
 			return nil, errTestDriver
-		}
-		// This stub never builds a provider; New's success path is covered by
-		// the real drivers' own tests.
-		return nil, errTestDriver
+		},
+		Schema: cloud.Schema{
+			Connection: []cloud.Field{{Key: "endpoint", Label: "Endpoint", Type: cloud.FieldText}},
+		},
 	})
 
 	if !cloud.HasDriver(name) {
 		t.Error("the driver was not registered")
 	}
 	var found bool
-	for _, n := range cloud.DriverNames() {
-		if n == name {
+	for _, d := range cloud.Drivers() {
+		if d.Name == name {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("DriverNames does not list the registered driver")
+		t.Error("Drivers() does not list the registered driver")
 	}
 
 	// The constructor's error must reach the caller, since a bad configuration
 	// is the common case here.
-	if _, err := cloud.New(name, map[string]any{"fail": true}); err == nil {
+	if _, err := cloud.New(name, nil); err == nil {
 		t.Error("expected the constructor's error to propagate")
+	}
+
+	// The schema is what the UI renders a form from, so it has to survive
+	// registration intact.
+	drv, ok := cloud.DriverByName(name)
+	if !ok {
+		t.Fatal("DriverByName did not find the registered driver")
+	}
+	if len(drv.Schema.Connection) != 1 || drv.Schema.Connection[0].Key != "endpoint" {
+		t.Errorf("schema = %+v", drv.Schema)
+	}
+	if drv.Title == "" {
+		t.Error("a driver should carry a human-readable title for the picker")
 	}
 }
 
@@ -194,7 +213,10 @@ func TestRegisterPanicsOnDuplicate(t *testing.T) {
 	}()
 	// Only reachable through a programming error at init, so failing loudly is
 	// correct.
-	fn := func(map[string]any) (cloud.Provider, error) { return nil, errTestDriver }
-	cloud.Register("duplicate-driver-test", fn)
-	cloud.Register("duplicate-driver-test", fn)
+	d := cloud.Driver{
+		Name: "duplicate-driver-test",
+		New:  func(map[string]any) (cloud.Provider, error) { return nil, errTestDriver },
+	}
+	cloud.Register(d)
+	cloud.Register(d)
 }

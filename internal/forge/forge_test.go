@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/slop-place/runnerforge/internal/cloud"
 	"github.com/slop-place/runnerforge/internal/forge"
 )
 
@@ -142,20 +143,38 @@ func TestRegisterRejectsDuplicates(t *testing.T) {
 	}()
 	// Registering twice can only happen through a programming error at init
 	// time, so failing loudly is correct.
-	stub := func(map[string]any) (forge.Forge, error) {
-		return nil, errors.New("stub constructor, never called")
+	impl := forge.Implementation{
+		Kind:  "duplicate-kind-test",
+		Title: "Test forge",
+		New: func(map[string]any) (forge.Forge, error) {
+			return nil, errors.New("stub constructor, never called")
+		},
+		// A field, because a registration with none would fail the
+		// presentability check that runs in this same binary.
+		Fields: []cloud.Field{{Key: "url", Label: "URL", Type: cloud.FieldText}},
 	}
-	forge.Register("duplicate-kind-test", stub)
-	forge.Register("duplicate-kind-test", stub)
+	forge.Register(impl)
+	forge.Register(impl)
 }
 
-func TestKindsListsRegisteredForges(t *testing.T) {
+func TestImplementationsArePresentableAndSorted(t *testing.T) {
 	t.Parallel()
 	// The UI builds its picker from this, so a forge missing here cannot be
-	// configured at all.
-	kinds := forge.Kinds()
-	if len(kinds) == 0 {
+	// configured at all, and one with no fields cannot be configured correctly.
+	all := forge.Implementations()
+	if len(all) == 0 {
 		t.Skip("no forges registered in this test binary")
+	}
+	for i, impl := range all {
+		if impl.Title == "" {
+			t.Errorf("%s has no title for the picker", impl.Kind)
+		}
+		if len(impl.Fields) == 0 {
+			t.Errorf("%s declares no fields, so its form would be empty", impl.Kind)
+		}
+		if i > 0 && all[i-1].Kind > impl.Kind {
+			t.Error("Implementations() is not sorted")
+		}
 	}
 }
 

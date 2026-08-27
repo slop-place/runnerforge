@@ -13,6 +13,7 @@ import (
 	// Drivers and forges register themselves on import; without these the
 	// handlers would reject every cloud and forge as an unknown kind.
 	_ "github.com/slop-place/runnerforge/internal/cloud/dockerdrv"
+	_ "github.com/slop-place/runnerforge/internal/cloud/openstack"
 	"github.com/slop-place/runnerforge/internal/config"
 	"github.com/slop-place/runnerforge/internal/controller"
 	_ "github.com/slop-place/runnerforge/internal/forge/forgejo"
@@ -97,10 +98,9 @@ func TestCreateCloudAndCatalogue(t *testing.T) {
 	db, h := newServer(t)
 
 	rec := post(t, h, "/clouds", url.Values{
-		"name":        {"ovh-test"},
-		"driver":      {"docker"},
-		"settings":    {`{"region":"US-EAST-VA-1"}`},
-		"credentials": {`{"password":"hunter2"}`},
+		"name":     {"ovh-test"},
+		"driver":   {"docker"},
+		"f_socket": {"/var/run/docker.sock"},
 	})
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("create cloud = %d, body: %s", rec.Code, rec.Body.String())
@@ -114,35 +114,28 @@ func TestCreateCloudAndCatalogue(t *testing.T) {
 		t.Fatalf("expected 1 cloud, got %d", len(clouds))
 	}
 	cl := clouds[0]
-	if cl.Settings.String("region") != "US-EAST-VA-1" {
+	if cl.Settings.String("socket") != "/var/run/docker.sock" {
 		t.Errorf("settings = %v", cl.Settings)
-	}
-	if cl.Credentials["password"] != "hunter2" {
-		t.Error("credentials did not round-trip through encryption")
 	}
 	if !cl.Enabled {
 		t.Error("a newly created cloud should be enabled")
 	}
 
-	// The edit page must not render the secret back to the browser.
 	rec = get(t, h, "/clouds/1")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("edit page = %d", rec.Code)
 	}
-	if strings.Contains(rec.Body.String(), "hunter2") {
-		t.Error("the edit page leaked a stored credential")
-	}
 
 	t.Run("add a size and an image", func(t *testing.T) {
 		rec := post(t, h, "/clouds/1/sizes", url.Values{
-			"name": {"small"}, "spec": {`{"cpus":2}`},
+			"name": {"small"}, "f_cpus": {"2"},
 			"vcpus": {"2"}, "memory_mb": {"2048"}, "hourly_usd": {"0.02"},
 		})
 		if rec.Code != http.StatusSeeOther {
 			t.Fatalf("add size = %d, body: %s", rec.Code, rec.Body.String())
 		}
 		rec = post(t, h, "/clouds/1/images", url.Values{
-			"name": {"ci-base"}, "spec": {`{"image":"alpine"}`}, "username": {"debian"},
+			"name": {"ci-base"}, "f_image": {"alpine"}, "username": {"debian"},
 		})
 		if rec.Code != http.StatusSeeOther {
 			t.Fatalf("add image = %d", rec.Code)
@@ -175,14 +168,9 @@ func TestCreateCloudRejectsBadInput(t *testing.T) {
 			want: "unknown+driver",
 		},
 		{
-			name: "malformed settings",
-			form: url.Values{"name": {"x"}, "driver": {"docker"}, "settings": {"{oops"}},
-			want: "settings",
-		},
-		{
-			name: "malformed credentials",
-			form: url.Values{"name": {"x"}, "driver": {"docker"}, "credentials": {"[1,2]"}},
-			want: "credentials",
+			name: "missing name",
+			form: url.Values{"driver": {"docker"}},
+			want: "Name",
 		},
 	}
 	for _, tt := range tests {
@@ -195,7 +183,6 @@ func TestCreateCloudRejectsBadInput(t *testing.T) {
 			if !strings.Contains(loc, tt.want) {
 				t.Errorf("redirect %q should carry an error about %q", loc, tt.want)
 			}
-			// However bad the input, the redirect stays on this site.
 			if !strings.HasPrefix(loc, "/") || strings.HasPrefix(loc, "//") {
 				t.Errorf("redirect left the site: %q", loc)
 			}
@@ -203,30 +190,63 @@ func TestCreateCloudRejectsBadInput(t *testing.T) {
 	}
 }
 
-func TestUpdateCloudKeepsCredentialsWhenBlank(t *testing.T) {
+func TestSizeFormRejectsNonNumericInput(t *testing.T) {
+	_, h := newServer(t)
+	post(t, h, "/clouds", url.Values{"name": {"c"}, "driver": {"docker"}})
+
+	// A field the driver declared as a number must reject prose, or the spec
+	// would carry a string the driver cannot use.
+	rec := post(t, h, "/clouds/1/sizes", url.Values{"name": {"s"}, "f_cpus": {"lots"}})
+	loc := rec.Header().Get("Location")
+	if !strings.Contains(loc, "number") {
+		t.Errorf("redirect %q should say the field must be a number", loc)
+	}
+}
+
+func TestUpdateCloudKeepsSecretsWhenBlank(t *testing.T) {
 	db, h := newServer(t)
 	post(t, h, "/clouds", url.Values{
-		"name": {"c"}, "driver": {"docker"}, "credentials": {`{"password":"keepme"}`},
+		"name": {"c"}, "driver": {"openstack"},
+		"f_auth_url": {"https://auth.example/v3"}, "f_region": {"R1"},
+		"f_project_id": {"p"}, "f_username": {"u"}, "f_password": {"keepme"},
 	})
 
-	// Editing the region must not require re-entering a secret the operator
+	// Editing the region must not require re-entering a password the operator
 	// cannot see.
 	rec := post(t, h, "/clouds/1", url.Values{
 		"name": {"c"}, "enabled": {"on"},
-		"settings": {`{"region":"eu"}`}, "credentials": {""},
+		"f_auth_url": {"https://auth.example/v3"}, "f_region": {"R2"},
+		"f_project_id": {"p"}, "f_username": {"u"}, "f_password": {""},
 	})
 	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("update = %d, body: %s", rec.Code, rec.Body.String())
+		t.Fatalf("update = %d", rec.Code)
 	}
 	cl, err := db.CloudByID(t.Context(), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cl.Credentials["password"] != "keepme" {
-		t.Error("blank credentials should preserve the stored ones")
+		t.Error("a blank secret field erased the stored password")
 	}
-	if cl.Settings.String("region") != "eu" {
+	if cl.Settings.String("region") != "R2" {
 		t.Error("the settings update did not apply")
+	}
+}
+
+func TestSecretsAreNeverRenderedBack(t *testing.T) {
+	_, h := newServer(t)
+	post(t, h, "/clouds", url.Values{
+		"name": {"c"}, "driver": {"openstack"},
+		"f_auth_url": {"https://auth.example/v3"}, "f_region": {"R1"},
+		"f_project_id": {"p"}, "f_username": {"u"}, "f_password": {"hunter2"},
+	})
+	body := get(t, h, "/clouds/1").Body.String()
+	if strings.Contains(body, "hunter2") {
+		t.Error("the edit page rendered a stored secret back to the browser")
+	}
+	// It should still say one is stored, so the operator knows not to re-enter it.
+	if !strings.Contains(body, "Leave blank to keep") {
+		t.Error("the form does not indicate that a secret is already stored")
 	}
 }
 
@@ -235,7 +255,7 @@ func TestDisablingPersists(t *testing.T) {
 	post(t, h, "/clouds", url.Values{"name": {"c"}, "driver": {"docker"}})
 
 	// Unchecking the box omits the field entirely, which must read as false.
-	rec := post(t, h, "/clouds/1", url.Values{"name": {"c"}, "settings": {"{}"}})
+	rec := post(t, h, "/clouds/1", url.Values{"name": {"c"}})
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("update = %d", rec.Code)
 	}
@@ -251,11 +271,11 @@ func TestDisablingPersists(t *testing.T) {
 func TestPoolLifecycle(t *testing.T) {
 	db, h := newServer(t)
 	post(t, h, "/clouds", url.Values{"name": {"c"}, "driver": {"docker"}})
-	post(t, h, "/clouds/1/sizes", url.Values{"name": {"s"}, "spec": {"{}"}})
+	post(t, h, "/clouds/1/sizes", url.Values{"name": {"s"}})
 	post(t, h, "/forges", url.Values{
 		"name": {"f"}, "kind": {"forgejo"},
-		"settings":    {`{"url":"http://f","scope":"repo","owner":"o","repo":"r"}`},
-		"credentials": {`{"token":"t"}`},
+		"f_url": {"http://f"}, "f_scope": {"repo"},
+		"f_owner": {"o"}, "f_repo": {"r"}, "f_token": {"t"},
 	})
 
 	rec := post(t, h, "/pools", url.Values{
@@ -309,8 +329,11 @@ func TestPoolLifecycle(t *testing.T) {
 func TestPoolDeletionBlockedByLiveMachines(t *testing.T) {
 	db, h := newServer(t)
 	post(t, h, "/clouds", url.Values{"name": {"c"}, "driver": {"docker"}})
-	post(t, h, "/clouds/1/sizes", url.Values{"name": {"s"}, "spec": {"{}"}})
-	post(t, h, "/forges", url.Values{"name": {"f"}, "kind": {"forgejo"}})
+	post(t, h, "/clouds/1/sizes", url.Values{"name": {"s"}})
+	post(t, h, "/forges", url.Values{
+		"name": {"f"}, "kind": {"forgejo"}, "f_url": {"http://f"},
+		"f_scope": {"repo"}, "f_owner": {"o"}, "f_repo": {"r"}, "f_token": {"t"},
+	})
 	post(t, h, "/pools", url.Values{
 		"name": {"p"}, "forge_id": {"1"}, "cloud_id": {"1"}, "size_id": {"1"},
 		"labels": {"linux"}, "max_instances": {"3"},
@@ -341,8 +364,11 @@ func TestNotFound(t *testing.T) {
 func TestInstancePageShowsLogs(t *testing.T) {
 	db, h := newServer(t)
 	post(t, h, "/clouds", url.Values{"name": {"c"}, "driver": {"docker"}})
-	post(t, h, "/clouds/1/sizes", url.Values{"name": {"s"}, "spec": {"{}"}})
-	post(t, h, "/forges", url.Values{"name": {"f"}, "kind": {"forgejo"}})
+	post(t, h, "/clouds/1/sizes", url.Values{"name": {"s"}})
+	post(t, h, "/forges", url.Values{
+		"name": {"f"}, "kind": {"forgejo"}, "f_url": {"http://f"},
+		"f_scope": {"repo"}, "f_owner": {"o"}, "f_repo": {"r"}, "f_token": {"t"},
+	})
 	post(t, h, "/pools", url.Values{
 		"name": {"p"}, "forge_id": {"1"}, "cloud_id": {"1"}, "size_id": {"1"},
 		"labels": {"linux"}, "max_instances": {"3"},
@@ -373,7 +399,7 @@ func TestForgeEditShowsWebhookURL(t *testing.T) {
 	_, h := newServer(t)
 	post(t, h, "/forges", url.Values{
 		"name": {"gh"}, "kind": {"github"},
-		"settings": {`{"owner":"o","repo":"r"}`},
+		"f_scope": {"repo"}, "f_owner": {"o"}, "f_repo": {"r"}, "f_token": {"t"},
 	})
 	rec := get(t, h, "/forges/1")
 	if !strings.Contains(rec.Body.String(), "https://rf.example.com/webhooks/1") {
@@ -393,8 +419,8 @@ func TestReapEndpoint(t *testing.T) {
 func TestDeleteSizeAndImage(t *testing.T) {
 	db, h := newServer(t)
 	post(t, h, "/clouds", url.Values{"name": {"c"}, "driver": {"docker"}})
-	post(t, h, "/clouds/1/sizes", url.Values{"name": {"s"}, "spec": {"{}"}})
-	post(t, h, "/clouds/1/images", url.Values{"name": {"i"}, "spec": {"{}"}})
+	post(t, h, "/clouds/1/sizes", url.Values{"name": {"s"}})
+	post(t, h, "/clouds/1/images", url.Values{"name": {"i"}, "f_image": {"alpine"}})
 
 	if rec := post(t, h, "/sizes/1/delete", nil); rec.Code != http.StatusOK {
 		t.Errorf("delete size = %d", rec.Code)
@@ -446,8 +472,8 @@ func TestCheckForgeRecordsStatus(t *testing.T) {
 	db, h := newServer(t)
 	post(t, h, "/forges", url.Values{
 		"name": {"f"}, "kind": {"forgejo"},
-		"settings":    {`{"url":"http://127.0.0.1:1","scope":"repo","owner":"o","repo":"r"}`},
-		"credentials": {`{"token":"t"}`},
+		"f_url": {"http://127.0.0.1:1"}, "f_scope": {"repo"},
+		"f_owner": {"o"}, "f_repo": {"r"}, "f_token": {"t"},
 	})
 
 	rec := post(t, h, "/forges/1/check", nil)
@@ -469,15 +495,16 @@ func TestCheckForgeRecordsStatus(t *testing.T) {
 func TestUpdateAndDeleteForge(t *testing.T) {
 	db, h := newServer(t)
 	post(t, h, "/forges", url.Values{
-		"name": {"f"}, "kind": {"forgejo"}, "credentials": {`{"token":"original"}`},
+		"name": {"f"}, "kind": {"forgejo"}, "f_url": {"http://f"},
+		"f_scope": {"repo"}, "f_owner": {"o"}, "f_repo": {"r"}, "f_token": {"original"},
 	})
 
 	rec := post(t, h, "/forges/1", url.Values{
 		"name": {"renamed"}, "enabled": {"on"},
-		"settings": {`{"scope":"org","owner":"o"}`},
+		"f_url": {"http://f"}, "f_scope": {"org"}, "f_owner": {"o"},
 		// Blank keeps the stored token; the webhook secret is set for the
 		// first time.
-		"credentials":    {""},
+		"f_token":        {""},
 		"webhook_secret": {"whsec"},
 	})
 	if rec.Code != http.StatusSeeOther {
@@ -505,27 +532,29 @@ func TestUpdateAndDeleteForge(t *testing.T) {
 	}
 }
 
-func TestUpdateForgeRejectsMalformedSettings(t *testing.T) {
+func TestUpdateForgeRejectsMissingRequiredField(t *testing.T) {
 	_, h := newServer(t)
-	post(t, h, "/forges", url.Values{"name": {"f"}, "kind": {"forgejo"}})
-
-	rec := post(t, h, "/forges/1", url.Values{"name": {"f"}, "settings": {"{oops"}})
-	if !strings.Contains(rec.Header().Get("Location"), "err=") {
-		t.Error("malformed settings should be refused with a message")
-	}
-	rec = post(t, h, "/forges/1", url.Values{
-		"name": {"f"}, "settings": {"{}"}, "credentials": {"[not an object]"},
+	post(t, h, "/forges", url.Values{
+		"name": {"f"}, "kind": {"forgejo"}, "f_url": {"http://f"},
+		"f_scope": {"repo"}, "f_owner": {"o"}, "f_repo": {"r"}, "f_token": {"t"},
 	})
+
+	// The instance URL is required; clearing it must be refused rather than
+	// saved into a connection that can never work.
+	rec := post(t, h, "/forges/1", url.Values{"name": {"f"}, "f_scope": {"repo"}})
 	if !strings.Contains(rec.Header().Get("Location"), "err=") {
-		t.Error("malformed credentials should be refused with a message")
+		t.Error("a missing required field should be refused")
 	}
 }
 
 func TestDestroyInstanceEndpoint(t *testing.T) {
 	db, h := newServer(t)
 	post(t, h, "/clouds", url.Values{"name": {"c"}, "driver": {"docker"}})
-	post(t, h, "/clouds/1/sizes", url.Values{"name": {"s"}, "spec": {"{}"}})
-	post(t, h, "/forges", url.Values{"name": {"f"}, "kind": {"forgejo"}})
+	post(t, h, "/clouds/1/sizes", url.Values{"name": {"s"}})
+	post(t, h, "/forges", url.Values{
+		"name": {"f"}, "kind": {"forgejo"}, "f_url": {"http://f"},
+		"f_scope": {"repo"}, "f_owner": {"o"}, "f_repo": {"r"}, "f_token": {"t"},
+	})
 	post(t, h, "/pools", url.Values{
 		"name": {"p"}, "forge_id": {"1"}, "cloud_id": {"1"}, "size_id": {"1"},
 		"labels": {"linux"}, "max_instances": {"3"},
@@ -555,8 +584,11 @@ func TestDestroyInstanceEndpoint(t *testing.T) {
 func TestPartialsRenderWithData(t *testing.T) {
 	db, h := newServer(t)
 	post(t, h, "/clouds", url.Values{"name": {"c"}, "driver": {"docker"}})
-	post(t, h, "/clouds/1/sizes", url.Values{"name": {"s"}, "spec": {"{}"}})
-	post(t, h, "/forges", url.Values{"name": {"f"}, "kind": {"forgejo"}})
+	post(t, h, "/clouds/1/sizes", url.Values{"name": {"s"}})
+	post(t, h, "/forges", url.Values{
+		"name": {"f"}, "kind": {"forgejo"}, "f_url": {"http://f"},
+		"f_scope": {"repo"}, "f_owner": {"o"}, "f_repo": {"r"}, "f_token": {"t"},
+	})
 	post(t, h, "/pools", url.Values{
 		"name": {"mypool"}, "forge_id": {"1"}, "cloud_id": {"1"}, "size_id": {"1"},
 		"labels": {"linux"}, "max_instances": {"3"},
@@ -584,7 +616,7 @@ func TestPartialsRenderWithData(t *testing.T) {
 func TestCloudOptionsPartialFollowsTheSelectedCloud(t *testing.T) {
 	_, h := newServer(t)
 	post(t, h, "/clouds", url.Values{"name": {"a"}, "driver": {"docker"}})
-	post(t, h, "/clouds/1/sizes", url.Values{"name": {"only-on-a"}, "spec": {"{}"}})
+	post(t, h, "/clouds/1/sizes", url.Values{"name": {"only-on-a"}})
 	post(t, h, "/clouds", url.Values{"name": {"b"}, "driver": {"docker"}})
 
 	// Sizes are per cloud, so the picker has to follow the selection.

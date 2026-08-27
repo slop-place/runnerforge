@@ -27,25 +27,37 @@ var (
 )
 
 func init() {
-	cloud.Register("fake", func(cfg map[string]any) (cloud.Provider, error) {
-		id, _ := cfg["fake_id"].(string)
-		fakeMu.Lock()
-		defer fakeMu.Unlock()
-		p, ok := fakeClouds[id]
-		if !ok {
-			return nil, fmt.Errorf("fake cloud %q not registered by the test", id)
-		}
-		return p, nil
+	cloud.Register(cloud.Driver{
+		Name:  "fake",
+		Title: "Fake cloud",
+		New: func(cfg map[string]any) (cloud.Provider, error) {
+			id, _ := cfg["fake_id"].(string)
+			fakeMu.Lock()
+			defer fakeMu.Unlock()
+			p, ok := fakeClouds[id]
+			if !ok {
+				return nil, fmt.Errorf("fake cloud %q not registered by the test", id)
+			}
+			return p, nil
+		},
+		Schema: cloud.Schema{
+			Connection: []cloud.Field{{Key: "fake_id", Label: "Fake ID", Type: cloud.FieldText}},
+		},
 	})
-	forge.Register("fake", func(cfg map[string]any) (forge.Forge, error) {
-		id, _ := cfg["fake_id"].(string)
-		fakeMu.Lock()
-		defer fakeMu.Unlock()
-		f, ok := fakeForges[id]
-		if !ok {
-			return nil, fmt.Errorf("fake forge %q not registered by the test", id)
-		}
-		return f, nil
+	forge.Register(forge.Implementation{
+		Kind:  "fake",
+		Title: "Fake forge",
+		New: func(cfg map[string]any) (forge.Forge, error) {
+			id, _ := cfg["fake_id"].(string)
+			fakeMu.Lock()
+			defer fakeMu.Unlock()
+			f, ok := fakeForges[id]
+			if !ok {
+				return nil, fmt.Errorf("fake forge %q not registered by the test", id)
+			}
+			return f, nil
+		},
+		Fields: []cloud.Field{{Key: "fake_id", Label: "Fake ID", Type: cloud.FieldText}},
 	})
 }
 

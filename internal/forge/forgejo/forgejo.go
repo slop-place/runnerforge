@@ -28,7 +28,51 @@ import (
 // beyond the job timeout, so the runner has a chance to exit cleanly first.
 const shutdownGraceMinutes = 5
 
-func init() { forge.Register(forge.KindForgejo, New) }
+func init() {
+	forge.Register(forge.Implementation{
+		Kind:  forge.KindForgejo,
+		Title: "Forgejo Actions",
+		New:   New,
+		Fields: []cloud.Field{
+			{
+				Key: "url", Label: "Instance URL", Type: cloud.FieldText, Required: true,
+				Placeholder: "https://forgejo.example.com",
+				Help:        "As the runner machines will reach it.",
+			},
+			{
+				Key: "api_url", Label: "API URL", Type: cloud.FieldText,
+				Help: "Only if the controller reaches the instance at a different " +
+					"address than the runners do.",
+			},
+			{
+				Key: "scope", Label: "Scope", Type: cloud.FieldSelect, Required: true,
+				Default: scopeRepo,
+				Options: []cloud.Option{
+					{Value: scopeRepo, Label: "One repository"},
+					{Value: scopeOrg, Label: "An organisation"},
+					{Value: scopeUser, Label: "A user's repositories"},
+					{Value: scopeAdmin, Label: "The whole instance"},
+				},
+				Help: "Runners are only ever created inside this scope.",
+			},
+			{Key: "owner", Label: "Owner", Type: cloud.FieldText, Placeholder: "my-org",
+				Help: "The account or organisation, for the org and repo scopes."},
+			{Key: "repo", Label: "Repository", Type: cloud.FieldText, Placeholder: "my-repo",
+				Help: "For the repo scope."},
+			{
+				Key: "runner_image", Label: "Runner image", Type: cloud.FieldText,
+				Placeholder: DefaultRunnerImage,
+				Help: "Must be runner 12 or newer: older ones exit immediately when no " +
+					"task is available at the instant they start.",
+			},
+			{
+				Key: "token", Label: "API token", Type: cloud.FieldPassword,
+				Required: true, Secret: true,
+				Help: "Needs permission to manage runners in the chosen scope.",
+			},
+		},
+	})
+}
 
 // Forgejo talks to one Forgejo instance at one scope.
 type Forgejo struct {
@@ -103,24 +147,32 @@ func New(cfg map[string]any) (forge.Forge, error) {
 // instant they start, which turns every launch into a race.
 const DefaultRunnerImage = "code.forgejo.org/forgejo/runner:12"
 
+// The scopes a connection can target, as the API paths name them.
+const (
+	scopeRepo  = "repo"
+	scopeOrg   = "org"
+	scopeUser  = "user"
+	scopeAdmin = "admin"
+)
+
 // scopePath builds the API prefix for the configured scope. Getting this wrong
 // is the difference between a runner that sees every repository on the instance
 // and one that sees a single project, so it is validated rather than assumed.
 func scopePath(scope, owner, repo string) (string, error) {
 	switch scope {
-	case "", "repo":
+	case "", scopeRepo:
 		if owner == "" || repo == "" {
 			return "", errors.New("forgejo: repo scope requires owner and repo")
 		}
 		return "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo), nil
-	case "org":
+	case scopeOrg:
 		if owner == "" {
 			return "", errors.New("forgejo: org scope requires owner")
 		}
 		return "/orgs/" + url.PathEscape(owner), nil
-	case "user":
+	case scopeUser:
 		return "/user", nil
-	case "admin":
+	case scopeAdmin:
 		return "/admin", nil
 	default:
 		return "", fmt.Errorf("forgejo: unknown scope %q (want admin, user, org or repo)", scope)

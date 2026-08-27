@@ -38,7 +38,53 @@ import (
 // beyond the job timeout, so the runner has a chance to exit cleanly first.
 const shutdownGraceMinutes = 5
 
-func init() { forge.Register(forge.KindGitLab, New) }
+func init() {
+	forge.Register(forge.Implementation{
+		Kind:  forge.KindGitLab,
+		Title: "GitLab CI",
+		New:   New,
+		Fields: []cloud.Field{
+			{
+				Key: "url", Label: "Instance URL", Type: cloud.FieldText, Required: true,
+				Placeholder: "https://gitlab.example.com",
+				Help:        "As the runner machines will reach it.",
+			},
+			{
+				Key: "api_url", Label: "API URL", Type: cloud.FieldText,
+				Help: "Only if the controller reaches GitLab at a different address " +
+					"than the runners do.",
+			},
+			{
+				Key: "scope", Label: "Scope", Type: cloud.FieldSelect, Required: true,
+				Default: scopeProject,
+				Options: []cloud.Option{
+					{Value: scopeProject, Label: "One project"},
+					{Value: scopeGroup, Label: "A group"},
+					{Value: scopeInstance, Label: "The whole instance"},
+				},
+				Help: "Only the project scope can poll for pending jobs; the others " +
+					"need one pool per project.",
+			},
+			{Key: "project_id", Label: "Project ID", Type: cloud.FieldText, Placeholder: "42"},
+			{Key: "group_id", Label: "Group ID", Type: cloud.FieldText, Placeholder: "9"},
+			{
+				Key: "job_image", Label: "Default job image", Type: cloud.FieldText,
+				Default: DefaultJobImage,
+				Help:    "Used when .gitlab-ci.yml does not name one.",
+			},
+			{
+				Key: "runner_image", Label: "Runner image", Type: cloud.FieldText,
+				Placeholder: DefaultRunnerImage,
+			},
+			{Key: "run_untagged", Label: "Accept untagged jobs", Type: cloud.FieldBool},
+			{
+				Key: "token", Label: "Access token", Type: cloud.FieldPassword,
+				Required: true, Secret: true,
+				Help: "Needs the api scope, and permission to create runners.",
+			},
+		},
+	})
+}
 
 // GitLab talks to one GitLab instance at one scope.
 type GitLab struct {
@@ -54,6 +100,13 @@ type GitLab struct {
 }
 
 // Runner types, as GitLab names them.
+// The scopes a connection can target.
+const (
+	scopeProject  = "project"
+	scopeGroup    = "group"
+	scopeInstance = "instance"
+)
+
 const (
 	runnerTypeProject  = "project_type"
 	runnerTypeGroup    = "group_type"
@@ -117,17 +170,17 @@ func New(cfg map[string]any) (forge.Forge, error) {
 	}
 
 	switch get("scope") {
-	case "", "project":
+	case "", scopeProject:
 		if g.projectID == "" {
 			return nil, errors.New("gitlab: project scope requires project_id")
 		}
 		g.runnerType = runnerTypeProject
-	case "group":
+	case scopeGroup:
 		if g.groupID == "" {
 			return nil, errors.New("gitlab: group scope requires group_id")
 		}
 		g.runnerType = runnerTypeGroup
-	case "instance":
+	case scopeInstance:
 		g.runnerType = runnerTypeInstance
 	default:
 		return nil, fmt.Errorf("gitlab: unknown scope %q (want project, group or instance)", get("scope"))

@@ -1,7 +1,7 @@
 {{define "content"}}
 <h1>Forges</h1>
-<p class="lede">A forge is one connection to GitHub, GitLab or Forgejo, scoped to
-a repository, organisation or group. runnerforge only ever creates runners inside
+<p class="lede">A forge is one connection to GitHub, GitLab or Forgejo, scoped
+to a repository, organisation or group. Runners are only ever created inside
 that scope.</p>
 
 <table>
@@ -14,7 +14,7 @@ that scope.</p>
       <td><code class="dim">{{scope .Settings}}</code></td>
       <td>
         {{if eq .Status "ok"}}<span class="ok">reachable</span>
-        {{else if .Status}}<span class="bad" title="{{.StatusDetail}}">{{.Status}}</span>
+        {{else if .Status}}<span class="bad" title="{{.StatusDetail}}">error</span>
         {{else}}<span class="muted">unchecked</span>{{end}}
       </td>
       <td class="right">
@@ -31,21 +31,29 @@ that scope.</p>
 </table>
 
 <h2>Add a forge</h2>
-<form method="post" action="/forges" class="form">
-  <label>Name<input name="name" required placeholder="github-slop"></label>
-  <label>Kind
-    <select name="kind">
-      <option value="github">github</option>
-      <option value="gitlab">gitlab</option>
-      <option value="forgejo">forgejo</option>
-    </select>
-  </label>
-  <label>Settings <span class="hint">JSON</span>
-    <textarea name="settings" rows="4" placeholder='{"url": "https://api.github.com", "scope": "repo", "owner": "slop-place", "repo": "ci-test"}'></textarea>
-  </label>
-  <label>Credentials <span class="hint">JSON, encrypted at rest</span>
-    <textarea name="credentials" rows="2" placeholder='{"token": "..."}'></textarea>
-  </label>
-  <button>Add forge</button>
-</form>
+{{if .Forge}}
+  <form method="post" action="/forges" class="form">
+    <input type="hidden" name="kind" value="{{.Forge.Kind}}">
+    <label>
+      <span class="lbl">Name<b class="req">required</b></span>
+      <span class="hint">What you will call this connection in pools.</span>
+      <input name="name" required placeholder="github-main">
+    </label>
+    {{template "fields" .Fields}}
+    <div class="actions">
+      <button>Add forge</button>
+      <a class="ghost" href="/forges">Cancel</a>
+    </div>
+  </form>
+{{else}}
+  <p class="lede">Pick a forge. The form asks for what that forge actually needs.</p>
+  <div class="picker">
+    {{range .ForgeKinds}}
+      <a class="pick" href="/forges?kind={{.Kind}}">
+        <span class="pick-name">{{.Title}}</span>
+        <span class="pick-key">{{.Kind}}</span>
+      </a>
+    {{end}}
+  </div>
+{{end}}
 {{end}}

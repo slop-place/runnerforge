@@ -12,33 +12,37 @@ whose labels this pool covers get a machine of that shape.</p>
   <a href="/clouds">cloud</a> with a size first.</p>
 {{else}}
 <form method="post" action="/pools" class="form">
-  <label>Name<input name="name" required placeholder="gh-small"></label>
-  <label>Forge<select name="forge_id">{{range .Forges}}<option value="{{.ID}}">{{.Name}} ({{.Kind}})</option>{{end}}</select></label>
-  <label>Cloud<select name="cloud_id" hx-get="/partials/cloud-options" hx-target="#shape" hx-trigger="change">
+  <label><span class="lbl">Name<b class="req">required</b></span><input name="name" required placeholder="gh-small"></label>
+  <label><span class="lbl">Forge</span><select name="forge_id">{{range .Forges}}<option value="{{.ID}}">{{.Name}} ({{.Kind}})</option>{{end}}</select></label>
+  <label><span class="lbl">Cloud</span><select name="cloud_id" hx-get="/partials/cloud-options" hx-target="#shape" hx-trigger="change">
     {{range .Clouds}}<option value="{{.ID}}">{{.Name}} ({{.Driver}})</option>{{end}}
   </select></label>
   <div id="shape">{{template "cloud-options" .}}</div>
-  <label>Labels <span class="hint">comma separated; a job is served when this pool covers every label it asks for</span>
+  <label><span class="lbl">Labels<b class="req">required</b></span>
+    <span class="hint">Comma separated. A job is served when this pool covers every label it asks for.</span>
     <input name="labels" required placeholder="self-hosted,linux,x64"></label>
-  <label>Max machines<input name="max_instances" type="number" min="1" value="5"></label>
-  <label>Min idle <span class="hint">warm machines kept waiting; costs money, buys latency</span>
+  <label><span class="lbl">Max machines</span><span class="hint">Keep at or below the account quota.</span><input name="max_instances" type="number" min="1" value="5"></label>
+  <label><span class="lbl">Min idle</span>
+    <span class="hint">Warm machines kept waiting. Costs money, buys latency.</span>
     <input name="min_idle" type="number" min="0" value="0"></label>
-  <label>Job timeout (s)<input name="job_timeout_sec" type="number" min="60" value="3600"></label>
-  <label>Max lifetime (s) <span class="hint">hard ceiling; must exceed the job timeout</span>
+  <label><span class="lbl">Job timeout (s)</span><input name="job_timeout_sec" type="number" min="60" value="3600"></label>
+  <label><span class="lbl">Max lifetime (s)</span>
+    <span class="hint">The reaper's hard ceiling. Must exceed the job timeout, or machines are destroyed mid-job.</span>
     <input name="max_lifetime_sec" type="number" min="120" value="7200"></label>
-  <label>Container image <span class="hint">optional override for container-based clouds</span>
+  <label><span class="lbl">Container image</span>
+    <span class="hint">Optional override for container-based clouds.</span>
     <input name="container_image" placeholder=""></label>
-  <label class="check"><input type="checkbox" name="public_ipv4" checked> Give machines a public IPv4</label>
-  <button>Add pool</button>
+  <label class="check"><input type="checkbox" name="public_ipv4" checked><span>Give machines a public IPv4</span></label>
+  <div class="actions"><button>Add pool</button></div>
 </form>
 {{end}}
 {{end}}
 
 {{define "cloud-options"}}
-<label>Size<select name="size_id">
+<label><span class="lbl">Size</span><select name="size_id">
   {{range .Sizes}}<option value="{{.ID}}">{{.Name}}</option>{{else}}<option value="">— this cloud has no sizes —</option>{{end}}
 </select></label>
-<label>Image<select name="image_id">
+<label><span class="lbl">Image</span><select name="image_id">
   <option value="">— none —</option>
   {{range .Images}}<option value="{{.ID}}">{{.Name}}</option>{{end}}
 </select></label>
