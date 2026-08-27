@@ -199,3 +199,16 @@ func TestAPICalls(t *testing.T) {
 		}
 	})
 }
+
+func TestNameAndKind(t *testing.T) {
+	t.Parallel()
+	f := newForge(t, map[string]any{"name": "my-connection"})
+	// The name keeps two connections to the same forge distinguishable in
+	// logs and in the UI.
+	if f.Name() != "my-connection" {
+		t.Errorf("Name = %q", f.Name())
+	}
+	if f.Kind() != forge.KindGitHub {
+		t.Errorf("Kind = %q", f.Kind())
+	}
+}

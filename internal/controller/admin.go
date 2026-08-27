@@ -40,31 +40,54 @@ func (c *Controller) CheckForge(ctx context.Context, f *store.Forge) {
 }
 
 // DestroyInstance tears down one machine on request, from the UI.
+//
+// It degrades rather than refusing. An operator reaching for this is usually
+// dealing with something already broken, so a misconfigured forge must not
+// stop a machine being destroyed, and a row with nothing behind it must be
+// closeable without any client at all.
 func (c *Controller) DestroyInstance(ctx context.Context, id uint) error {
 	var inst store.Instance
 	if err := c.db.WithContext(ctx).First(&inst, id).Error; err != nil {
-		return err
+		return fmt.Errorf("load instance %d: %w", id, err)
 	}
 	if inst.State == store.StateDeleted {
 		return nil
 	}
+
+	// Nothing was ever created, so there is nothing to call anyone about.
+	if inst.ProviderID == "" && inst.ForgeRunnerID == "" {
+		return c.db.SetState(ctx, &inst, store.StateDeleted)
+	}
+
 	pool, err := c.db.PoolByID(ctx, inst.PoolID)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return err
 	}
-	if pool == nil || pool.Cloud == nil || pool.Forge == nil {
-		// The pool is gone, so there is nothing to resolve a provider from.
-		// Close the row out and let the reaper find the machine by its tags.
+	if pool == nil || pool.Cloud == nil {
+		// The pool is gone, so there is no provider to resolve. Close the row
+		// out and leave the machine to the reaper, which finds it by its tags.
+		c.db.Logf(ctx, "warn", "destroy", nil, &inst.ID,
+			"closing out %s from the UI; its pool is gone, the reaper will collect the machine",
+			inst.Name)
 		return c.db.SetState(ctx, &inst, store.StateDeleted)
 	}
+
 	prov, err := c.res.Cloud(pool.Cloud)
 	if err != nil {
-		return err
+		// Without a provider the machine cannot be destroyed, and pretending
+		// otherwise would leak it.
+		return fmt.Errorf("destroy %s: %w", inst.Name, err)
 	}
-	fg, err := c.res.Forge(pool.Forge)
-	if err != nil {
-		return err
+
+	// The forge is best-effort: a stale registration is harmless where a stray
+	// machine is not, so a broken forge connection must not block the destroy.
+	fg, ferr := c.res.Forge(pool.Forge)
+	if ferr != nil {
+		c.log.Warn("destroying without deregistering: the forge could not be reached",
+			"instance", inst.Name, "err", ferr)
+		fg = nil
 	}
+
 	c.db.Logf(ctx, "warn", "destroy", &pool.ID, &inst.ID, "%s destroyed from the UI", inst.Name)
 	if err := c.destroy(ctx, prov, fg, &inst); err != nil {
 		return fmt.Errorf("destroy %s: %w", inst.Name, err)

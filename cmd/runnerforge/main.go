@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -44,7 +45,7 @@ const (
 )
 
 func main() {
-	if err := run(os.Args[1:]); err != nil {
+	if err := run(os.Args[1:], os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, "runnerforge:", err)
 		os.Exit(1)
 	}
@@ -66,26 +67,30 @@ The config file holds only what is needed to start: identity, database and
 the key that encrypts credentials at rest.`
 }
 
-func run(args []string) error {
+// run dispatches a subcommand. Output goes to out rather than straight to
+// stdout so the command surface is testable.
+func run(args []string, out io.Writer) error {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintln(os.Stdout, usage())
+		_, _ = fmt.Fprintln(out, usage())
 		return nil
 	}
 	cmd, rest := args[0], args[1:]
 
 	switch cmd {
 	case "version":
-		_, _ = fmt.Fprintln(os.Stdout, version)
+		_, _ = fmt.Fprintln(out, version)
 		return nil
 	case "genkey":
 		k, err := config.GenerateSecretKey()
 		if err != nil {
 			return err
 		}
-		_, _ = fmt.Fprintln(os.Stdout, k)
+		_, _ = fmt.Fprintln(out, k)
 		return nil
 	case "serve":
-		return serve(rest)
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return serve(ctx, rest)
 	case "reap":
 		return oneShot(rest, func(ctx context.Context, c *controller.Controller) error {
 			return c.Reap(ctx)
@@ -93,11 +98,11 @@ func run(args []string) error {
 	case "destroy-all":
 		return oneShot(rest, func(ctx context.Context, c *controller.Controller) error {
 			n, err := c.DestroyAll(ctx)
-			_, _ = fmt.Fprintf(os.Stdout, "destroyed %d machine(s)\n", n)
+			_, _ = fmt.Fprintf(out, "destroyed %d machine(s)\n", n)
 			return err
 		})
 	case "-h", "--help", "help":
-		_, _ = fmt.Fprintln(os.Stdout, usage())
+		_, _ = fmt.Fprintln(out, usage())
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q\n\n%s", cmd, usage())
@@ -148,14 +153,18 @@ func oneShot(args []string, fn func(context.Context, *controller.Controller) err
 	return fn(ctx, ctrl)
 }
 
-func serve(args []string) error {
+// serve runs the web UI and the controller until ctx is cancelled.
+//
+// The context is a parameter rather than being built here so the whole command
+// can be started and stopped by a test, and so it can be embedded.
+func serve(ctx context.Context, args []string) error {
 	cfg, db, ctrl, err := setup(args)
 	if err != nil {
 		return err
 	}
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := context.WithCancel(ctx)
 	defer stop()
 
 	srv := &http.Server{
@@ -188,7 +197,11 @@ func serve(args []string) error {
 	// Give in-flight requests a moment, but do not wait on the controller: any
 	// machine it was mid-flight on is the reaper's problem on next startup,
 	// which is exactly what the reaper is for.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	//
+	// This deliberately does not inherit ctx: ctx is already cancelled by the
+	// time we get here, and a shutdown deadline derived from it would expire
+	// immediately, cutting off requests that are still being served.
+	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownTimeout)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shut down web server: %w", err)

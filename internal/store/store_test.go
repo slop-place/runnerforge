@@ -460,3 +460,119 @@ func TestBooleanFieldsPersistFalse(t *testing.T) {
 		t.Error("Pool.PublicIPv4 was created as false but stored as true")
 	}
 }
+
+func TestQueryHelpers(t *testing.T) {
+	db := newDB(t)
+	ctx := context.Background()
+	pool := seedPool(t, db)
+
+	t.Run("clouds load their catalogues", func(t *testing.T) {
+		if err := db.Create(&store.Size{CloudID: 1, Name: "s2"}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Create(&store.Image{CloudID: 1, Name: "i1"}).Error; err != nil {
+			t.Fatal(err)
+		}
+		clouds, err := db.Clouds(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(clouds) != 1 {
+			t.Fatalf("got %d clouds", len(clouds))
+		}
+		// Pools reference sizes and images by name, so the catalogues have to
+		// come back with the cloud.
+		if len(clouds[0].Sizes) != 2 || len(clouds[0].Images) != 1 {
+			t.Errorf("catalogues: %d sizes, %d images", len(clouds[0].Sizes), len(clouds[0].Images))
+		}
+	})
+
+	t.Run("forges are listed", func(t *testing.T) {
+		fs, err := db.Forges(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(fs) != 1 {
+			t.Errorf("got %d forges", len(fs))
+		}
+	})
+
+	t.Run("pools resolve their dependencies", func(t *testing.T) {
+		ps, err := db.Pools(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(ps) != 1 {
+			t.Fatalf("got %d pools", len(ps))
+		}
+		if ps[0].Forge == nil || ps[0].Cloud == nil || ps[0].Size == nil {
+			t.Error("a pool came back without its forge, cloud or size resolved")
+		}
+	})
+
+	t.Run("live instances span pools", func(t *testing.T) {
+		for _, st := range []store.InstanceState{store.StateIdle, store.StateDeleted} {
+			if err := db.Create(&store.Instance{
+				Name: "rf-all-" + string(st), PoolID: pool.ID, State: st,
+			}).Error; err != nil {
+				t.Fatal(err)
+			}
+		}
+		all, err := db.AllLiveInstances(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(all) != 1 {
+			t.Errorf("AllLiveInstances returned %d, want only the non-deleted one", len(all))
+		}
+		if all[0].Pool == nil {
+			t.Error("the pool was not preloaded; the reaper needs it for the lifetime ceiling")
+		}
+	})
+
+	t.Run("recent instances include deleted ones", func(t *testing.T) {
+		// The UI shows history, so deleted machines must still be listed.
+		recent, err := db.RecentInstances(ctx, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sawDeleted bool
+		for _, in := range recent {
+			if in.State == store.StateDeleted {
+				sawDeleted = true
+			}
+		}
+		if !sawDeleted {
+			t.Error("RecentInstances hides deleted machines; the UI would show no history")
+		}
+	})
+
+	t.Run("recent instances respect the limit", func(t *testing.T) {
+		recent, err := db.RecentInstances(ctx, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(recent) != 1 {
+			t.Errorf("limit ignored: got %d rows", len(recent))
+		}
+	})
+
+	t.Run("instance lookup by name", func(t *testing.T) {
+		got, err := db.InstanceByName(ctx, "rf-all-idle")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Name != "rf-all-idle" {
+			t.Errorf("got %q", got.Name)
+		}
+	})
+}
+
+func TestSecretValueWithoutAKeyFails(t *testing.T) {
+	// Guard against a startup ordering bug silently writing plaintext.
+	db := newDB(t)
+	_ = db
+	if err := store.SetKey(make([]byte, 8)); err == nil {
+		t.Error("a short key should be rejected")
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/slop-place/runnerforge/internal/cloud"
 	"github.com/slop-place/runnerforge/internal/forge"
@@ -350,5 +351,190 @@ func TestCheckCloudAndForgeRecordStatus(t *testing.T) {
 	h.ctrl.CheckForge(ctx, &forges[0])
 	if forges[0].Status != "ok" {
 		t.Errorf("forge status = %q, want ok", forges[0].Status)
+	}
+}
+
+func TestDestroyInstanceDegradesGracefully(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("nothing provisioned needs no clients", func(t *testing.T) {
+		h := newHarness(t)
+		inst := &store.Instance{Name: "rf-empty", PoolID: h.pool.ID, State: store.StatePending}
+		if err := h.db.Create(inst).Error; err != nil {
+			t.Fatal(err)
+		}
+		// A row with nothing behind it must be closeable even if every client
+		// is broken, or an operator cannot clear a stuck pool.
+		if err := h.ctrl.DestroyInstance(ctx, inst.ID); err != nil {
+			t.Fatalf("destroy: %v", err)
+		}
+		live, _ := h.db.LiveInstances(ctx, h.pool.ID)
+		if len(live) != 0 {
+			t.Error("the row was not closed out")
+		}
+	})
+
+	t.Run("a broken forge does not block the machine", func(t *testing.T) {
+		h := newHarness(t)
+		h.forge.setJobs(forge.Job{ID: "j1", Labels: []string{"linux"}})
+		if err := h.ctrl.ReconcileAll(ctx); err != nil {
+			t.Fatal(err)
+		}
+		live, _ := h.db.LiveInstances(ctx, h.pool.ID)
+		if len(live) != 1 {
+			t.Fatalf("setup: %d instances", len(live))
+		}
+
+		// Break the forge connection the way a rotated token would.
+		var fg store.Forge
+		if err := h.db.First(&fg, h.pool.ForgeID).Error; err != nil {
+			t.Fatal(err)
+		}
+		fg.Settings = store.Params{"fake_id": "no-such-forge"}
+		if err := h.db.Save(&fg).Error; err != nil {
+			t.Fatal(err)
+		}
+
+		if err := h.ctrl.DestroyInstance(ctx, live[0].ID); err != nil {
+			t.Fatalf("destroy with a broken forge: %v", err)
+		}
+		// The machine is what costs money; it must go regardless.
+		if h.cloud.count() != 0 {
+			t.Error("the machine survived because the forge was unreachable")
+		}
+	})
+
+	t.Run("a missing instance is an error", func(t *testing.T) {
+		h := newHarness(t)
+		if err := h.ctrl.DestroyInstance(ctx, 9999); err == nil {
+			t.Error("expected an error for an unknown instance")
+		}
+	})
+}
+
+func TestCountMachines(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+
+	clouds, err := h.db.Clouds(ctx)
+	if err != nil || len(clouds) != 1 {
+		t.Fatalf("setup: %v", err)
+	}
+	n, err := h.ctrl.CountMachines(ctx, &clouds[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("count = %d on an empty cloud", n)
+	}
+
+	h.forge.setJobs(forge.Job{ID: "j1", Labels: []string{"linux"}})
+	if err := h.ctrl.ReconcileAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ = h.ctrl.CountMachines(ctx, &clouds[0]); n != 1 {
+		t.Errorf("count = %d after launching one machine", n)
+	}
+
+	// Machines that are not ours are not counted, even in the same account.
+	h.cloud.add(&cloud.Instance{
+		ID: "foreign", Name: "someone-elses-database", State: cloud.StateRunning,
+		Tags: map[string]string{cloud.TagController: h.id, cloud.TagPool: "p"},
+	})
+	if n, _ = h.ctrl.CountMachines(ctx, &clouds[0]); n != 1 {
+		t.Errorf("count = %d; a machine without our name prefix was counted", n)
+	}
+}
+
+func TestOwnerHelper(t *testing.T) {
+	h := newHarness(t)
+	o := h.ctrl.Owner("mypool")
+	if o.Controller != h.id || o.Pool != "mypool" {
+		t.Errorf("Owner = %+v", o)
+	}
+	// An empty pool is the controller-wide sweep the reaper uses.
+	if h.ctrl.Owner("").Pool != "" {
+		t.Error("an empty pool should stay empty")
+	}
+}
+
+func TestResolverRebuildsAfterAnEdit(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.forge.setJobs(forge.Job{ID: "j1", Labels: []string{"linux"}})
+	if err := h.ctrl.ReconcileAll(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	// Editing a cloud in the UI must transparently invalidate the cached
+	// client, or the controller would keep using the old credentials.
+	var cl store.Cloud
+	if err := h.db.First(&cl, h.pool.CloudID).Error; err != nil {
+		t.Fatal(err)
+	}
+	cl.Settings = store.Params{"fake_id": "no-such-cloud"}
+	if err := h.db.Save(&cl).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	err := h.ctrl.ReconcileAll(ctx)
+	if err == nil {
+		t.Error("after pointing the cloud at a driver that cannot be built, reconcile should fail")
+	}
+}
+
+func TestRunReapsAtStartupThenLoops(t *testing.T) {
+	h := newHarness(t)
+
+	// A machine left behind by a previous process, with nothing watching it.
+	// Reaping on startup matters because it is billing for every second we
+	// wait for the first tick.
+	h.cloud.add(&cloud.Instance{
+		ID: "orphan", Name: "rf-orphan-1", State: cloud.StateRunning,
+		CreatedAt: time.Now().Add(-time.Minute),
+		Tags: map[string]string{
+			cloud.TagController: h.id, cloud.TagPool: h.pool.Name,
+		},
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- h.ctrl.Run(ctx) }()
+
+	deadline := time.After(10 * time.Second)
+	for h.cloud.count() > 0 {
+		select {
+		case <-deadline:
+			cancel()
+			t.Fatal("the startup reap did not collect the orphaned machine")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		// Cancellation is how the process stops; it must be reported as
+		// context cancellation rather than as a controller failure.
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Run returned %v, want a context cancellation", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return after its context was cancelled")
+	}
+}
+
+func TestRunKeepsGoingAfterAFailedPass(t *testing.T) {
+	h := newHarness(t)
+	// A broken cloud must not stop the loop: the next pass has to run, or a
+	// transient outage would wedge the controller until someone restarts it.
+	h.cloud.listErr = errors.New("cloud is down")
+	h.forge.setJobs(forge.Job{ID: "j1", Labels: []string{"linux"}})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err := h.ctrl.Run(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Run returned %v; it should have kept going until the deadline", err)
 	}
 }

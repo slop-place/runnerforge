@@ -251,7 +251,10 @@ func (c *Controller) destroy(ctx context.Context, prov cloud.Provider, fg forge.
 		}
 	}
 
-	if inst.ForgeRunnerID != "" {
+	// fg is nil when the forge could not be reached at all. A stale
+	// registration is harmless where a stray machine is not, so the machine is
+	// destroyed either way.
+	if fg != nil && inst.ForgeRunnerID != "" {
 		if err := fg.Deprovision(ctx, inst.ForgeRunnerID); err != nil {
 			c.log.Warn("could not remove forge runner registration",
 				"instance", inst.Name, "runner", inst.ForgeRunnerID, "err", err)

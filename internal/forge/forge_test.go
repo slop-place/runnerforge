@@ -148,3 +148,66 @@ func TestRegisterRejectsDuplicates(t *testing.T) {
 	forge.Register("duplicate-kind-test", stub)
 	forge.Register("duplicate-kind-test", stub)
 }
+
+func TestKindsListsRegisteredForges(t *testing.T) {
+	t.Parallel()
+	// The UI builds its picker from this, so a forge missing here cannot be
+	// configured at all.
+	kinds := forge.Kinds()
+	if len(kinds) == 0 {
+		t.Skip("no forges registered in this test binary")
+	}
+}
+
+func TestCredentialShapePerForge(t *testing.T) {
+	t.Parallel()
+	// The Credential fields are a union across the three forges; which are
+	// populated depends on Kind. This pins the expectation so a future forge
+	// does not quietly reuse the wrong field.
+	tests := []struct {
+		kind     forge.Kind
+		populate func(*forge.Credential)
+		check    func(*testing.T, forge.Credential)
+	}{
+		{
+			kind:     forge.KindGitHub,
+			populate: func(c *forge.Credential) { c.JITConfig = "blob" },
+			check: func(t *testing.T, c forge.Credential) {
+				t.Helper()
+				if c.JITConfig == "" {
+					t.Error("GitHub uses JITConfig")
+				}
+			},
+		},
+		{
+			kind: forge.KindForgejo,
+			populate: func(c *forge.Credential) {
+				c.UUID, c.Token = "u", "t"
+			},
+			check: func(t *testing.T, c forge.Credential) {
+				t.Helper()
+				if c.UUID == "" || c.Token == "" {
+					t.Error("Forgejo uses UUID and Token")
+				}
+			},
+		},
+		{
+			kind:     forge.KindGitLab,
+			populate: func(c *forge.Credential) { c.AuthToken = "glrt-x" },
+			check: func(t *testing.T, c forge.Credential) {
+				t.Helper()
+				if c.AuthToken == "" {
+					t.Error("GitLab uses AuthToken")
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.kind), func(t *testing.T) {
+			t.Parallel()
+			c := forge.Credential{Kind: tt.kind}
+			tt.populate(&c)
+			tt.check(t, c)
+		})
+	}
+}

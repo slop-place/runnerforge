@@ -234,3 +234,16 @@ func TestDemandIsEmptyOutsideProjectScope(t *testing.T) {
 		t.Errorf("expected no jobs outside project scope, got %d", len(jobs))
 	}
 }
+
+func TestNameAndKind(t *testing.T) {
+	t.Parallel()
+	f := newForge(t, map[string]any{"name": "my-connection"})
+	// The name keeps two connections to the same forge distinguishable in
+	// logs and in the UI.
+	if f.Name() != "my-connection" {
+		t.Errorf("Name = %q", f.Name())
+	}
+	if f.Kind() != forge.KindGitLab {
+		t.Errorf("Kind = %q", f.Kind())
+	}
+}

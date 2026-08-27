@@ -389,3 +389,228 @@ func TestReapEndpoint(t *testing.T) {
 	}
 	_ = io.Discard
 }
+
+func TestDeleteSizeAndImage(t *testing.T) {
+	db, h := newServer(t)
+	post(t, h, "/clouds", url.Values{"name": {"c"}, "driver": {"docker"}})
+	post(t, h, "/clouds/1/sizes", url.Values{"name": {"s"}, "spec": {"{}"}})
+	post(t, h, "/clouds/1/images", url.Values{"name": {"i"}, "spec": {"{}"}})
+
+	if rec := post(t, h, "/sizes/1/delete", nil); rec.Code != http.StatusOK {
+		t.Errorf("delete size = %d", rec.Code)
+	}
+	if rec := post(t, h, "/images/1/delete", nil); rec.Code != http.StatusOK {
+		t.Errorf("delete image = %d", rec.Code)
+	}
+
+	cl, err := db.CloudByID(t.Context(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cl.Sizes) != 0 || len(cl.Images) != 0 {
+		t.Errorf("catalogue entries survived deletion: %d sizes, %d images",
+			len(cl.Sizes), len(cl.Images))
+	}
+}
+
+func TestCheckCloudRecordsStatus(t *testing.T) {
+	db, h := newServer(t)
+	// A docker cloud pointed at a socket that does not exist: the check must
+	// report the failure rather than silently pass.
+	post(t, h, "/clouds", url.Values{
+		"name": {"c"}, "driver": {"docker"},
+		"settings": {`{"socket":"/nonexistent/docker.sock"}`},
+	})
+
+	rec := post(t, h, "/clouds/1/check", nil)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("check = %d", rec.Code)
+	}
+	cl, err := db.CloudByID(t.Context(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cl.Status == "" {
+		t.Error("the check did not record a status")
+	}
+	if cl.StatusCheckAt == nil {
+		t.Error("the check did not record when it ran")
+	}
+	// An operator needs to know why, not just that it failed.
+	if cl.Status == "error" && cl.StatusDetail == "" {
+		t.Error("a failed check recorded no detail")
+	}
+}
+
+func TestCheckForgeRecordsStatus(t *testing.T) {
+	db, h := newServer(t)
+	post(t, h, "/forges", url.Values{
+		"name": {"f"}, "kind": {"forgejo"},
+		"settings":    {`{"url":"http://127.0.0.1:1","scope":"repo","owner":"o","repo":"r"}`},
+		"credentials": {`{"token":"t"}`},
+	})
+
+	rec := post(t, h, "/forges/1/check", nil)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("check = %d", rec.Code)
+	}
+	f, err := db.ForgeByID(t.Context(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Status != "error" {
+		t.Errorf("status = %q, want error for an unreachable forge", f.Status)
+	}
+	if f.StatusDetail == "" {
+		t.Error("no detail was recorded for the failure")
+	}
+}
+
+func TestUpdateAndDeleteForge(t *testing.T) {
+	db, h := newServer(t)
+	post(t, h, "/forges", url.Values{
+		"name": {"f"}, "kind": {"forgejo"}, "credentials": {`{"token":"original"}`},
+	})
+
+	rec := post(t, h, "/forges/1", url.Values{
+		"name": {"renamed"}, "enabled": {"on"},
+		"settings": {`{"scope":"org","owner":"o"}`},
+		// Blank keeps the stored token; the webhook secret is set for the
+		// first time.
+		"credentials":    {""},
+		"webhook_secret": {"whsec"},
+	})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("update = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	f, err := db.ForgeByID(t.Context(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Name != "renamed" {
+		t.Errorf("name = %q", f.Name)
+	}
+	if f.Credentials["token"] != "original" {
+		t.Error("blank credentials should preserve the stored token")
+	}
+	if f.WebhookSecret["secret"] != "whsec" {
+		t.Error("the webhook secret was not stored")
+	}
+
+	if rec := get(t, h, "/forges/1/delete"); rec.Code != http.StatusSeeOther {
+		t.Fatalf("delete = %d", rec.Code)
+	}
+	if _, err := db.ForgeByID(t.Context(), 1); err == nil {
+		t.Error("the forge was not deleted")
+	}
+}
+
+func TestUpdateForgeRejectsMalformedSettings(t *testing.T) {
+	_, h := newServer(t)
+	post(t, h, "/forges", url.Values{"name": {"f"}, "kind": {"forgejo"}})
+
+	rec := post(t, h, "/forges/1", url.Values{"name": {"f"}, "settings": {"{oops"}})
+	if !strings.Contains(rec.Header().Get("Location"), "err=") {
+		t.Error("malformed settings should be refused with a message")
+	}
+	rec = post(t, h, "/forges/1", url.Values{
+		"name": {"f"}, "settings": {"{}"}, "credentials": {"[not an object]"},
+	})
+	if !strings.Contains(rec.Header().Get("Location"), "err=") {
+		t.Error("malformed credentials should be refused with a message")
+	}
+}
+
+func TestDestroyInstanceEndpoint(t *testing.T) {
+	db, h := newServer(t)
+	post(t, h, "/clouds", url.Values{"name": {"c"}, "driver": {"docker"}})
+	post(t, h, "/clouds/1/sizes", url.Values{"name": {"s"}, "spec": {"{}"}})
+	post(t, h, "/forges", url.Values{"name": {"f"}, "kind": {"forgejo"}})
+	post(t, h, "/pools", url.Values{
+		"name": {"p"}, "forge_id": {"1"}, "cloud_id": {"1"}, "size_id": {"1"},
+		"labels": {"linux"}, "max_instances": {"3"},
+		"job_timeout_sec": {"600"}, "max_lifetime_sec": {"1200"},
+	})
+	// An instance with no provider id never got as far as creating anything,
+	// so destroying it is bookkeeping only.
+	if err := db.Create(&store.Instance{
+		Name: "rf-x", PoolID: 1, State: store.StatePending,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	rec := post(t, h, "/instances/1/destroy", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("destroy = %d, body: %s", rec.Code, rec.Body.String())
+	}
+	live, err := db.LiveInstances(t.Context(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(live) != 0 {
+		t.Errorf("%d instance(s) still live after destroy", len(live))
+	}
+}
+
+func TestPartialsRenderWithData(t *testing.T) {
+	db, h := newServer(t)
+	post(t, h, "/clouds", url.Values{"name": {"c"}, "driver": {"docker"}})
+	post(t, h, "/clouds/1/sizes", url.Values{"name": {"s"}, "spec": {"{}"}})
+	post(t, h, "/forges", url.Values{"name": {"f"}, "kind": {"forgejo"}})
+	post(t, h, "/pools", url.Values{
+		"name": {"mypool"}, "forge_id": {"1"}, "cloud_id": {"1"}, "size_id": {"1"},
+		"labels": {"linux"}, "max_instances": {"3"},
+		"job_timeout_sec": {"600"}, "max_lifetime_sec": {"1200"},
+	})
+	if err := db.Create(&store.Instance{
+		Name: "rf-visible", PoolID: 1, State: store.StateBusy, JobID: "job-7",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	db.Logf(t.Context(), "warn", "reap", nil, nil, "a thing happened")
+
+	if body := get(t, h, "/partials/pools").Body.String(); !strings.Contains(body, "mypool") {
+		t.Error("the pools partial does not show the pool")
+	}
+	body := get(t, h, "/partials/instances").Body.String()
+	if !strings.Contains(body, "rf-visible") || !strings.Contains(body, "job-7") {
+		t.Error("the machines partial does not show the instance and its job")
+	}
+	if body := get(t, h, "/partials/events").Body.String(); !strings.Contains(body, "a thing happened") {
+		t.Error("the events partial does not show the event")
+	}
+}
+
+func TestCloudOptionsPartialFollowsTheSelectedCloud(t *testing.T) {
+	_, h := newServer(t)
+	post(t, h, "/clouds", url.Values{"name": {"a"}, "driver": {"docker"}})
+	post(t, h, "/clouds/1/sizes", url.Values{"name": {"only-on-a"}, "spec": {"{}"}})
+	post(t, h, "/clouds", url.Values{"name": {"b"}, "driver": {"docker"}})
+
+	// Sizes are per cloud, so the picker has to follow the selection.
+	body := get(t, h, "/partials/cloud-options?cloud_id=1").Body.String()
+	if !strings.Contains(body, "only-on-a") {
+		t.Error("the size picker does not show the selected cloud's sizes")
+	}
+	body = get(t, h, "/partials/cloud-options?cloud_id=2").Body.String()
+	if strings.Contains(body, "only-on-a") {
+		t.Error("the size picker shows another cloud's sizes")
+	}
+	if !strings.Contains(body, "no sizes") {
+		t.Error("a cloud with no sizes should say so rather than showing an empty picker")
+	}
+
+	// An unknown cloud must not panic.
+	if rec := get(t, h, "/partials/cloud-options?cloud_id=999"); rec.Code != http.StatusOK {
+		t.Errorf("unknown cloud = %d", rec.Code)
+	}
+}
+
+func TestPoolCreationRefusesIncompleteInput(t *testing.T) {
+	_, h := newServer(t)
+	rec := post(t, h, "/pools", url.Values{"name": {"p"}})
+	loc := rec.Header().Get("Location")
+	if !strings.Contains(loc, "err=") {
+		t.Error("a pool with no forge, cloud or size should be refused")
+	}
+}

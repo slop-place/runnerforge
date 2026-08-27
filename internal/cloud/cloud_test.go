@@ -1,6 +1,7 @@
 package cloud_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/slop-place/runnerforge/internal/cloud"
@@ -150,4 +151,50 @@ func TestDriverNamesIsSorted(t *testing.T) {
 			t.Fatalf("DriverNames is not sorted: %v", names)
 		}
 	}
+}
+
+func TestRegisterAndNew(t *testing.T) {
+	name := "test-driver-registration"
+	cloud.Register(name, func(cfg map[string]any) (cloud.Provider, error) {
+		if cfg["fail"] == true {
+			return nil, errTestDriver
+		}
+		// This stub never builds a provider; New's success path is covered by
+		// the real drivers' own tests.
+		return nil, errTestDriver
+	})
+
+	if !cloud.HasDriver(name) {
+		t.Error("the driver was not registered")
+	}
+	var found bool
+	for _, n := range cloud.DriverNames() {
+		if n == name {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("DriverNames does not list the registered driver")
+	}
+
+	// The constructor's error must reach the caller, since a bad configuration
+	// is the common case here.
+	if _, err := cloud.New(name, map[string]any{"fail": true}); err == nil {
+		t.Error("expected the constructor's error to propagate")
+	}
+}
+
+var errTestDriver = errors.New("test driver refused")
+
+func TestRegisterPanicsOnDuplicate(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("registering the same driver twice should panic")
+		}
+	}()
+	// Only reachable through a programming error at init, so failing loudly is
+	// correct.
+	fn := func(map[string]any) (cloud.Provider, error) { return nil, errTestDriver }
+	cloud.Register("duplicate-driver-test", fn)
+	cloud.Register("duplicate-driver-test", fn)
 }
