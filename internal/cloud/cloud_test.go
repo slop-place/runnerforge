@@ -122,3 +122,32 @@ func TestNewUnknownDriver(t *testing.T) {
 		t.Fatal("expected an error for an unregistered driver")
 	}
 }
+
+func TestRegistryIsConcurrencySafe(t *testing.T) {
+	// The registries are written at init and read afterwards, so production is
+	// safe by construction. Guarding them anyway means the API is safe for any
+	// caller rather than safe only by convention — this is the test that says
+	// so, and it fails under -race without the lock.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range 200 {
+			_ = cloud.DriverNames()
+			_ = cloud.HasDriver("docker")
+		}
+	}()
+	for range 200 {
+		_, _ = cloud.New("definitely-not-registered", nil)
+	}
+	<-done
+}
+
+func TestDriverNamesIsSorted(t *testing.T) {
+	t.Parallel()
+	names := cloud.DriverNames()
+	for i := 1; i < len(names); i++ {
+		if names[i-1] > names[i] {
+			t.Fatalf("DriverNames is not sorted: %v", names)
+		}
+	}
+}

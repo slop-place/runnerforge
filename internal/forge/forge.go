@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/slop-place/runnerforge/internal/cloud"
@@ -155,20 +156,44 @@ type BootstrapOptions struct {
 // Registry maps forge kinds to constructors.
 type Registry map[Kind]func(cfg map[string]any) (Forge, error)
 
-// Forges is the process-wide forge registry, populated by each package's init.
-var Forges = Registry{}
+// forges is the process-wide forge registry, populated by each package's init.
+//
+// It is guarded even though registration happens at init, before any reader
+// exists. The lock costs nothing on a map read and means the API is safe for
+// any caller rather than safe only by convention — the same choice
+// database/sql makes for its driver registry.
+var (
+	forgesMu sync.RWMutex
+	forges   = Registry{}
+)
 
-// Register adds a forge constructor. Panics on duplicate registration.
+// Register adds a forge constructor. It panics on duplicate registration, which
+// can only happen through a programming error at init time.
 func Register(k Kind, fn func(cfg map[string]any) (Forge, error)) {
-	if _, dup := Forges[k]; dup {
+	forgesMu.Lock()
+	defer forgesMu.Unlock()
+	if _, dup := forges[k]; dup {
 		panic("forge: registered twice: " + string(k))
 	}
-	Forges[k] = fn
+	forges[k] = fn
+}
+
+// Kinds returns the registered forge kinds, for the UI's pickers.
+func Kinds() []Kind {
+	forgesMu.RLock()
+	defer forgesMu.RUnlock()
+	out := make([]Kind, 0, len(forges))
+	for k := range forges {
+		out = append(out, k)
+	}
+	return out
 }
 
 // New constructs a forge by kind.
 func New(k Kind, cfg map[string]any) (Forge, error) {
-	fn, ok := Forges[k]
+	forgesMu.RLock()
+	fn, ok := forges[k]
+	forgesMu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("unknown forge kind %q", k)
 	}

@@ -316,10 +316,7 @@ func (s *Server) clouds(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	for name := range cloud.Drivers {
-		v.Drivers = append(v.Drivers, name)
-	}
-	sort.Strings(v.Drivers)
+	v.Drivers = cloud.DriverNames()
 	s.render(w, "clouds", v)
 }
 
@@ -338,7 +335,7 @@ func (s *Server) createCloud(w http.ResponseWriter, r *http.Request) {
 		Name: strings.TrimSpace(r.FormValue("name")), Driver: r.FormValue("driver"),
 		Enabled: true, Settings: settings, Credentials: creds,
 	}
-	if _, ok := cloud.Drivers[c.Driver]; !ok {
+	if !cloud.HasDriver(c.Driver) {
 		s.fail(w, r, "/clouds", fmt.Errorf("unknown driver %q", c.Driver))
 		return
 	}

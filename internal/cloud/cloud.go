@@ -10,6 +10,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"sync"
 	"time"
 )
 
@@ -271,21 +273,54 @@ type LogProvider interface {
 // Registry maps driver names to constructors so config can name a driver.
 type Registry map[string]func(cfg map[string]any) (Provider, error)
 
-// Drivers is the process-wide driver registry, populated by each driver's init.
-var Drivers = Registry{}
+// drivers is the process-wide driver registry, populated by each driver's init.
+//
+// It is guarded even though registration happens at init, before any reader
+// exists. The lock costs nothing on a map read and means the API is safe for
+// any caller rather than safe only by convention — the same choice
+// database/sql makes for its driver registry.
+var (
+	driversMu sync.RWMutex
+	drivers   = Registry{}
+)
 
 // Register adds a driver constructor. It panics on duplicate registration,
 // which can only happen through a programming error at init time.
 func Register(name string, fn func(cfg map[string]any) (Provider, error)) {
-	if _, dup := Drivers[name]; dup {
+	driversMu.Lock()
+	defer driversMu.Unlock()
+	if _, dup := drivers[name]; dup {
 		panic("cloud: driver registered twice: " + name)
 	}
-	Drivers[name] = fn
+	drivers[name] = fn
+}
+
+// DriverNames returns the registered driver names in sorted order, for the
+// UI's pickers.
+func DriverNames() []string {
+	driversMu.RLock()
+	defer driversMu.RUnlock()
+	out := make([]string, 0, len(drivers))
+	for name := range drivers {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// HasDriver reports whether a driver name is registered.
+func HasDriver(name string) bool {
+	driversMu.RLock()
+	defer driversMu.RUnlock()
+	_, ok := drivers[name]
+	return ok
 }
 
 // New constructs a provider by driver name.
 func New(name string, cfg map[string]any) (Provider, error) {
-	fn, ok := Drivers[name]
+	driversMu.RLock()
+	fn, ok := drivers[name]
+	driversMu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("unknown cloud driver %q", name)
 	}

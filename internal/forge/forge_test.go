@@ -142,6 +142,9 @@ func TestRegisterRejectsDuplicates(t *testing.T) {
 	}()
 	// Registering twice can only happen through a programming error at init
 	// time, so failing loudly is correct.
-	forge.Register("duplicate-kind-test", func(map[string]any) (forge.Forge, error) { return nil, nil })
-	forge.Register("duplicate-kind-test", func(map[string]any) (forge.Forge, error) { return nil, nil })
+	stub := func(map[string]any) (forge.Forge, error) {
+		return nil, errors.New("stub constructor, never called")
+	}
+	forge.Register("duplicate-kind-test", stub)
+	forge.Register("duplicate-kind-test", stub)
 }
