@@ -11,7 +11,7 @@ import (
 func stripTags(s string) string {
 	var b strings.Builder
 	depth := 0
-	for i := 0; i < len(s); i++ {
+	for i := range len(s) {
 		switch s[i] {
 		case '<':
 			depth++

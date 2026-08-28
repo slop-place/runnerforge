@@ -65,57 +65,78 @@ func highlightHCLLine(line string) string {
 	rest = rest[indent:]
 
 	for rest != "" {
+		var emitted string
 		switch {
 		case rest[0] == '"':
-			// A string, to the next unescaped quote.
-			end := 1
-			for end < len(rest) {
-				if rest[end] == '\\' {
-					end += 2
-					continue
-				}
-				if rest[end] == '"' {
-					end++
-					break
-				}
-				end++
-			}
-			b.WriteString(token("str", rest[:end]))
-			rest = rest[end:]
-
+			emitted = scanHCLString(rest)
+			b.WriteString(token("str", emitted))
 		case isIdentStart(rest[0]):
-			end := 0
-			for end < len(rest) && isIdentPart(rest[end]) {
-				end++
-			}
-			word := rest[:end]
-			switch {
-			case hclKeywords[word]:
-				b.WriteString(token("kw", word))
-			case strings.HasPrefix(rest[end:], "."):
-				// A reference such as runnerforge_cloud.name.id.
-				b.WriteString(token("ref", word))
-			case attributeFollows(rest[end:]):
-				b.WriteString(token("attr", word))
-			default:
-				b.WriteString(token("", word))
-			}
-			rest = rest[end:]
-
+			emitted = scanIdent(rest)
+			b.WriteString(token(hclIdentClass(emitted, rest[len(emitted):]), emitted))
 		case rest[0] >= '0' && rest[0] <= '9':
-			end := 0
-			for end < len(rest) && (rest[end] == '.' || (rest[end] >= '0' && rest[end] <= '9')) {
-				end++
-			}
-			b.WriteString(token("num", rest[:end]))
-			rest = rest[end:]
-
+			emitted = scanNumber(rest)
+			b.WriteString(token("num", emitted))
 		default:
-			b.WriteString(token("", rest[:1]))
-			rest = rest[1:]
+			emitted = rest[:1]
+			b.WriteString(token("", emitted))
 		}
+		rest = rest[len(emitted):]
 	}
 	return b.String()
+}
+
+// scanHCLString returns the string literal at the head of s, to the next
+// unescaped quote or the end of the line.
+func scanHCLString(s string) string {
+	end := 1
+	for end < len(s) {
+		if s[end] == '\\' {
+			end += 2
+			continue
+		}
+		if s[end] == '"' {
+			end++
+			break
+		}
+		end++
+	}
+	if end > len(s) {
+		return s
+	}
+	return s[:end]
+}
+
+// scanIdent returns the identifier at the head of s.
+func scanIdent(s string) string {
+	end := 0
+	for end < len(s) && isIdentPart(s[end]) {
+		end++
+	}
+	return s[:end]
+}
+
+// scanNumber returns the number at the head of s.
+func scanNumber(s string) string {
+	end := 0
+	for end < len(s) && (s[end] == '.' || (s[end] >= '0' && s[end] <= '9')) {
+		end++
+	}
+	return s[:end]
+}
+
+// hclIdentClass decides what an identifier is, from the word and what follows.
+func hclIdentClass(word, rest string) string {
+	switch {
+	case hclKeywords[word]:
+		return "kw"
+	case strings.HasPrefix(rest, "."):
+		// A reference such as runnerforge_cloud.name.id.
+		return "ref"
+	case attributeFollows(rest):
+		return "attr"
+	default:
+		return ""
+	}
 }
 
 // attributeFollows reports whether what comes next makes the preceding word an
@@ -171,7 +192,7 @@ func highlightYAMLLine(line string) string {
 }
 
 // splitYAMLKey separates a key from its value.
-func splitYAMLKey(s string) (key, value string, ok bool) {
+func splitYAMLKey(s string) (string, string, bool) {
 	for i := range len(s) {
 		if s[i] != ':' {
 			continue
@@ -221,8 +242,7 @@ func isNumeric(s string) bool {
 		return false
 	}
 	dots := 0
-	for i := range len(s) {
-		c := s[i]
+	for i, c := range []byte(s) {
 		switch {
 		case c >= '0' && c <= '9':
 		case c == '.':
