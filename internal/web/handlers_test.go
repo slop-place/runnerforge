@@ -21,9 +21,26 @@ import (
 	"github.com/slop-place/runnerforge/internal/store"
 )
 
+// lastDB is the store the most recent newServer built, so an API test can
+// inspect what a request actually wrote.
+var lastDB *store.DB
+
+// currentDB returns the store behind the most recently built server.
+func currentDB(t *testing.T) (*store.DB, bool) {
+	t.Helper()
+	return lastDB, lastDB != nil
+}
+
 // newServer builds the real router over a real database, so these exercise the
 // handlers end to end rather than in isolation.
 func newServer(t *testing.T) (*store.DB, http.Handler) {
+	t.Helper()
+	return newServerWithTokens(t, []string{testAPIToken})
+}
+
+// newServerWithTokens builds a server with a specific set of API tokens, so the
+// no-tokens-configured case can be exercised too.
+func newServerWithTokens(t *testing.T, tokens []string) (*store.DB, http.Handler) {
 	t.Helper()
 
 	key := make([]byte, 32)
@@ -39,14 +56,17 @@ func newServer(t *testing.T) (*store.DB, http.Handler) {
 	}
 	cfg := &config.Config{
 		ID: "rf-web-test", SecretKey: k, BaseURL: "https://rf.example.com",
-		Database: config.Database{Driver: "sqlite", DSN: t.TempDir() + "/w.db"},
+		Database:  config.Database{Driver: "sqlite", DSN: t.TempDir() + "/w.db"},
+		APITokens: tokens,
 	}
 	db, err := store.Open(cfg.Database.Driver, cfg.Database.DSN)
 	if err != nil {
 		t.Fatal(err)
 	}
 	log := slog.New(slog.DiscardHandler)
-	// Unauthenticated: the middleware is exercised in the auth package.
+	lastDB = db
+	// Unauthenticated browser side: the OIDC middleware is exercised in the
+	// auth package, and the API has a token check of its own.
 	return db, New(db, controller.New(db, cfg, log), cfg, log, nil).Handler()
 }
 

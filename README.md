@@ -86,7 +86,7 @@ export RF_TEST_GITHUB_OWNER=your-org RF_TEST_GITHUB_REPO=your-scratch-repo
 Every end-to-end test asserts that no machine and no runner registration
 survives the run. A test that leaks is a failing test.
 
-180 tests, 85.6% statement coverage, race-clean. The Docker and OpenStack
+219 tests, race-clean, and both modules pass every golangci-lint linter. The Docker and OpenStack
 drivers are tested against stub Engine and Nova/Neutron APIs, so their HTTP
 layers are covered without a daemon or a cloud account; the real-cloud
 integration test is separate and skips unless `RF_TEST_OS_*` is set.
