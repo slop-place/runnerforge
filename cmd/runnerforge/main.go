@@ -27,6 +27,7 @@ import (
 	"github.com/slop-place/runnerforge/internal/auth"
 	"github.com/slop-place/runnerforge/internal/config"
 	"github.com/slop-place/runnerforge/internal/controller"
+	"github.com/slop-place/runnerforge/internal/k8s"
 	"github.com/slop-place/runnerforge/internal/store"
 	"github.com/slop-place/runnerforge/internal/web"
 )
@@ -115,6 +116,8 @@ func setup(args []string) (*config.Config, *store.DB, *controller.Controller, er
 	fs := flag.NewFlagSet("runnerforge", flag.ContinueOnError)
 	path := fs.String("config", "runnerforge.yaml", "path to the bootstrap config file")
 	debug := fs.Bool("debug", false, "enable debug logging")
+	useK8s := fs.Bool("k8s", false,
+		"reconcile Kubernetes custom resources into this deployment")
 	if err := fs.Parse(args); err != nil {
 		return nil, nil, nil, fmt.Errorf("parse flags: %w", err)
 	}
@@ -140,6 +143,9 @@ func setup(args []string) (*config.Config, *store.DB, *controller.Controller, er
 	db, err := store.Open(cfg.Database.Driver, cfg.Database.DSN)
 	if err != nil {
 		return nil, nil, nil, err
+	}
+	if *useK8s {
+		cfg.Kubernetes.Enabled = true
 	}
 	return cfg, db, controller.New(db, cfg, log), nil
 }
@@ -189,6 +195,20 @@ func serve(ctx context.Context, args []string) error {
 		Addr:              cfg.Listen,
 		Handler:           web.New(db, ctrl, cfg, log, authn).Handler(),
 		ReadHeaderTimeout: readHeaderTimeout,
+	}
+
+	// The Kubernetes reconciler is optional and additive: with it on, resources
+	// applied to the cluster appear here, and everything else keeps working.
+	if cfg.Kubernetes.Enabled {
+		rec, err := k8s.New(cfg.Kubernetes, db, log)
+		if err != nil {
+			return fmt.Errorf("configure the Kubernetes reconciler: %w", err)
+		}
+		go func() {
+			if err := rec.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Error("kubernetes reconciler stopped", "err", err)
+			}
+		}()
 	}
 
 	errs := make(chan error, errBuffer)

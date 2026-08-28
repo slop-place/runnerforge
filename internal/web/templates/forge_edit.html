@@ -6,6 +6,10 @@
   {{else}}<span class="muted">no secret set — deliveries will be rejected</span>{{end}}
 </p>
 {{end}}
+{{if .Managed}}
+<p class="note">This is managed by a Kubernetes resource. Edits here are
+overwritten on the next reconcile — change the manifest instead.</p>
+{{end}}
 <form method="post" action="/forges/{{.Forge.ID}}" class="form">
   <label>
     <span class="lbl">Name</span>

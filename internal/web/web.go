@@ -27,6 +27,7 @@ import (
 	"github.com/slop-place/runnerforge/internal/config"
 	"github.com/slop-place/runnerforge/internal/controller"
 	"github.com/slop-place/runnerforge/internal/forge"
+	"github.com/slop-place/runnerforge/internal/k8s"
 	"github.com/slop-place/runnerforge/internal/store"
 )
 
@@ -243,6 +244,10 @@ type view struct {
 	ExportID      uint
 	ExportFormats []exportFormat
 
+	// Managed reports that the record being shown comes from a cluster object,
+	// so the UI can say so rather than offering edits that get overwritten.
+	Managed bool
+
 	// BaseURL is this deployment's own address, shown in the export snippets.
 	BaseURL string
 
@@ -456,6 +461,7 @@ func (s *Server) editCloud(w http.ResponseWriter, r *http.Request) {
 	}
 	v := s.base(r, c.Name, "clouds")
 	v.Cloud = c
+	v.Managed = k8s.Managed(c.Settings)
 	v.Fields = buildFields(drv.Schema.Connection, c.Settings, c.Credentials)
 	v.SizeFields = buildFields(drv.Schema.Size, nil, nil)
 	v.ImageFields = buildFields(drv.Schema.Image, nil, nil)
@@ -651,6 +657,7 @@ func (s *Server) editForge(w http.ResponseWriter, r *http.Request) {
 	}
 	v := s.base(r, f.Name, "forges")
 	v.Forge = f
+	v.Managed = k8s.Managed(f.Settings)
 	v.Fields = buildFields(impl.Fields, f.Settings, f.Credentials)
 	v.HasWebhookSecret = len(f.WebhookSecret) > 0
 	if s.cfg.BaseURL != "" {

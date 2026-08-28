@@ -18,6 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/slop-place/runnerforge/internal/auth"
+	"github.com/slop-place/runnerforge/internal/k8s"
 )
 
 // Config is the bootstrap file.
@@ -41,6 +42,11 @@ type Config struct {
 	// live in the database rather than in a file the operator controls. It is a
 	// 32-byte hex string; see GenerateSecretKey.
 	SecretKey string `yaml:"secret_key"`
+
+	// Kubernetes reconciles custom resources into this deployment. Enabling it
+	// makes the cluster the source of truth for whatever it manages; anything
+	// created in the UI or through the API is left alone.
+	Kubernetes k8s.Config `yaml:"kubernetes"`
 
 	// APITokens grant full control through the JSON API, which is how the
 	// Terraform provider and the Kubernetes reconciler drive runnerforge. They

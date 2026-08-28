@@ -55,6 +55,9 @@ the per-forge gotchas that shaped it.
 | Web UI (HTMX) | working |
 | Cost tracking | working |
 | OIDC sign-in | working |
+| JSON API | working |
+| Terraform provider | working |
+| Kubernetes CRDs | working |
 | Hetzner, DigitalOcean, Kubernetes drivers | not started |
 | Webhook ingestion (push instead of polling) | not started |
 
@@ -105,6 +108,40 @@ else is managed in the UI.
 
 The image is 19 MB, runs as a non-root user from `scratch`, and needs no
 Kubernetes.
+
+### Configuring it as code
+
+The UI is not a dead end. Every record renders itself as Terraform or as a
+Kubernetes custom resource — press **As Terraform** or **As Kubernetes** on any
+cloud, forge or pool, or take the whole configuration at once from the
+dashboard. Secrets are never rendered: Terraform gets a `var.` reference and
+Kubernetes gets a `secretRef` with a companion Secret stub, so the output is
+safe to commit.
+
+**Terraform.** See [terraform-provider-runnerforge](./terraform-provider-runnerforge).
+It drives the JSON API, which authenticates with a bearer token from
+`api_tokens` in the config — not the browser session, because a provider has no
+browser, and not the database, because those tokens grant control over the thing
+that would store them.
+
+**Kubernetes.** Apply [`k8s/crds.yaml`](./k8s/crds.yaml) and run with `-k8s`.
+`Cloud`, `Forge` and `Pool` objects are reconciled into runnerforge's database,
+and their status subresource reports back what happened:
+
+```
+$ kubectl get clouds,pools
+NAME         DRIVER   SIZES   STATUS   AGE
+k8s-docker   docker   2       Ready    28s
+
+NAME       FORGE         CLOUD        SIZE    MACHINES   STATUS
+k8s-pool   k8s-forgejo   k8s-docker   small   0          Ready
+```
+
+The cluster is the source of truth for what it manages, and those records show
+as read-only in the UI. Anything created through the UI or the API is left
+alone, so both ways of working coexist in one deployment. A pool deleted from
+the cluster whose machines are still running is kept until they finish — the
+reaper finds them by the pool name written on them.
 
 ### Protecting the console
 
