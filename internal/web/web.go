@@ -152,7 +152,7 @@ var funcs = template.FuncMap{
 // pages maps a page template to the layout it renders inside.
 var pages = []string{
 	"dashboard", "clouds", "cloud_edit", "forges", "forge_edit",
-	"pools", "pool_edit", "instances", "instance", "events",
+	"pools", "pool_edit", "instances", "instance", "events", "export",
 }
 
 func mustParse() map[string]*template.Template {
@@ -212,6 +212,13 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /partials/events", s.partialEvents)
 	mux.HandleFunc("GET /partials/cloud-options", s.partialCloudOptions)
 
+	s.apiRoutes(mux)
+
+	// Taking a record away as code.
+	mux.HandleFunc("GET /export/{kind}/{id}/{format}", s.exportRecord)
+	mux.HandleFunc("GET /export/{kind}/{id}/{format}/raw", s.exportRaw)
+	mux.HandleFunc("GET /export/all/{format}", s.exportAll)
+
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -227,6 +234,17 @@ type view struct {
 	Nav       string
 	Flash     string
 	FlashKind string
+
+	// Export is a rendered configuration, and the rest describe what it is,
+	// so the page can offer the other format and a download.
+	Export        string
+	ExportKind    string
+	ExportFormat  string
+	ExportID      uint
+	ExportFormats []exportFormat
+
+	// BaseURL is this deployment's own address, shown in the export snippets.
+	BaseURL string
 
 	// User is who is signed in, and Authenticated says whether the UI is gated
 	// at all. An ungated UI says so on every page rather than looking secure.
@@ -311,8 +329,6 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, to string, err err
 // where a destination is built, and it can never be anything but a plain
 // absolute path on this server.
 func (s *Server) redirect(w http.ResponseWriter, r *http.Request, path, key, value string) {
-	//nolint:gosec // G710: internalRedirect rejects anything that is not a
-	// same-origin absolute path, and the message is an escaped query value.
 	http.Redirect(w, r, internalRedirect(path, key, value), http.StatusSeeOther)
 }
 
@@ -330,7 +346,7 @@ func internalRedirect(path, key, value string) string {
 }
 
 func (s *Server) base(r *http.Request, title, nav string) view {
-	v := view{Title: title, Nav: nav, Authenticated: s.auth.Enabled()}
+	v := view{Title: title, Nav: nav, Authenticated: s.auth.Enabled(), BaseURL: s.cfg.BaseURL}
 	if u, ok := auth.UserFrom(r.Context()); ok {
 		v.User = u.Display()
 	}

@@ -23,6 +23,8 @@
   </label>
   <div class="actions">
     <button>Save</button>
+    <a class="ghost" href="/export/forge/{{.Forge.ID}}/hcl">As Terraform</a>
+    <a class="ghost" href="/export/forge/{{.Forge.ID}}/crd">As Kubernetes</a>
     <a class="ghost danger" href="/forges/{{.Forge.ID}}/delete">Delete forge</a>
   </div>
 </form>

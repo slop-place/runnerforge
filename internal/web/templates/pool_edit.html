@@ -10,7 +10,11 @@
   <label><span class="lbl">Max lifetime (s)</span><input name="max_lifetime_sec" type="number" min="120" value="{{.Pool.MaxLifetimeSec}}"></label>
   <label><span class="lbl">Container image</span><input name="container_image" value="{{.Pool.ContainerImage}}"></label>
   <label class="check"><input type="checkbox" name="public_ipv4" {{if .Pool.PublicIPv4}}checked{{end}}><span>Public IPv4</span></label>
-  <div class="actions"><button>Save</button>
-  <a class="ghost danger" href="/pools/{{.Pool.ID}}/delete">Delete pool</a></div>
+  <div class="actions">
+    <button>Save</button>
+    <a class="ghost" href="/export/pool/{{.Pool.ID}}/hcl">As Terraform</a>
+    <a class="ghost" href="/export/pool/{{.Pool.ID}}/crd">As Kubernetes</a>
+    <a class="ghost danger" href="/pools/{{.Pool.ID}}/delete">Delete pool</a>
+  </div>
 </form>
 {{end}}

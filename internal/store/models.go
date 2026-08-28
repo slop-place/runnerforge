@@ -12,8 +12,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
-
-	"gorm.io/gorm"
 )
 
 // wrapJSON annotates a JSON decoding failure with the package it came from, so
@@ -108,6 +106,11 @@ func (p Params) String(k string) string {
 	return ""
 }
 
+// Configuration records are hard-deleted rather than soft-deleted. What
+// happened is recorded in Events; a tombstone row would keep its unique name,
+// so a pool could not be recreated under the same name, and would still satisfy
+// foreign keys, so the size it referenced could never be removed.
+
 // A note on the Enabled fields below.
 //
 // They, and Pool.PublicIPv4, deliberately carry no `default:true` tag. GORM omits Go zero values from
@@ -137,9 +140,8 @@ type Cloud struct {
 	Sizes  []Size  `gorm:"constraint:OnDelete:CASCADE" json:"sizes"`
 	Images []Image `gorm:"constraint:OnDelete:CASCADE" json:"images"`
 
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
-	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Size is one entry in a cloud's instance-size catalogue.
@@ -209,9 +211,8 @@ type Forge struct {
 	StatusDetail  string     `json:"status_detail"`
 	StatusCheckAt *time.Time `json:"status_checked_at"`
 
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
-	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Pool is a set of interchangeable runners: one forge, one cloud, one shape.
@@ -254,9 +255,8 @@ type Pool struct {
 	PublicIPv4   bool       `json:"public_ipv4"`
 	AllowSSHFrom StringList `gorm:"type:text" json:"allow_ssh_from"`
 
-	CreatedAt time.Time      `json:"created_at"`
-	UpdatedAt time.Time      `json:"updated_at"`
-	DeletedAt gorm.DeletedAt `gorm:"index" json:"-"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // JobTimeout returns the pool's per-job ceiling.

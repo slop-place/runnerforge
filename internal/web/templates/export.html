@@ -1,0 +1,45 @@
+{{define "content"}}
+<h1>{{if eq .ExportKind "all"}}Whole configuration{{else}}{{.ExportKind}}{{end}} as code</h1>
+<p class="lede">This is the same configuration the forms produced. Secrets are
+not rendered — Terraform gets a variable and Kubernetes gets a
+<code>secretRef</code> — so it is safe to commit.</p>
+
+<div class="actions" style="margin-bottom:1rem">
+  {{$k := .ExportKind}}{{$id := .ExportID}}{{$f := .ExportFormat}}
+  {{range .ExportFormats}}
+    {{if eq $k "all"}}
+      <a class="{{if eq .Key $f}}ghost on{{else}}ghost{{end}}" href="/export/all/{{.Key}}">{{.Label}}</a>
+    {{else}}
+      <a class="{{if eq .Key $f}}ghost on{{else}}ghost{{end}}" href="/export/{{$k}}/{{$id}}/{{.Key}}">{{.Label}}</a>
+    {{end}}
+  {{end}}
+  {{if ne $k "all"}}
+    <a class="ghost" href="/export/{{$k}}/{{$id}}/{{$f}}/raw">Download</a>
+  {{end}}
+</div>
+
+<pre class="logs code">{{.Export}}</pre>
+
+{{if eq .ExportFormat "hcl"}}
+<h2>Using it</h2>
+<pre class="logs code">terraform {
+  required_providers {
+    runnerforge = {
+      source = "slop-place/runnerforge"
+    }
+  }
+}
+
+provider "runnerforge" {
+  endpoint = "{{if .BaseURL}}{{.BaseURL}}{{else}}http://localhost:8080{{end}}"
+  token    = var.runnerforge_token
+}</pre>
+{{else}}
+<h2>Using it</h2>
+<pre class="logs code">kubectl apply -f https://raw.githubusercontent.com/slop-place/runnerforge/main/k8s/crds.yaml
+kubectl apply -f the-file-above.yaml</pre>
+<p class="lede">runnerforge watches these when started with <code>-k8s</code>, and
+applies them to its own database. The UI then shows them as read-only, because
+the cluster is the source of truth for anything it manages.</p>
+{{end}}
+{{end}}

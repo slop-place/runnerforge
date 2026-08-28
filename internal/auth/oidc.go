@@ -160,6 +160,10 @@ func isPublicPath(p string) bool {
 		return true
 	case strings.HasPrefix(p, "/auth/"):
 		return true
+	case strings.HasPrefix(p, "/api/"):
+		// The JSON API authenticates with a bearer token of its own. Sending a
+		// browser redirect to a Terraform provider would be useless anyway.
+		return true
 	default:
 		return false
 	}

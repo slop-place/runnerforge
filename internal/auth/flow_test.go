@@ -478,3 +478,18 @@ func TestSecureCookiesFollowTheRedirectScheme(t *testing.T) {
 		t.Error("a plain-http redirect should not mark cookies Secure")
 	}
 }
+
+func TestAPIPathsBypassTheBrowserRedirect(t *testing.T) {
+	p := newStubProvider(t)
+	a := newAuth(t, p, Config{})
+	h := a.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	// The API carries a bearer token and has its own check; redirecting a
+	// Terraform provider to an identity provider would be useless.
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/pools", nil))
+	if rec.Code != http.StatusTeapot {
+		t.Errorf("/api/v1/pools = %d, want it to pass through to its own auth", rec.Code)
+	}
+}

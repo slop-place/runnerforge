@@ -8,6 +8,7 @@ package config
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -40,6 +41,12 @@ type Config struct {
 	// live in the database rather than in a file the operator controls. It is a
 	// 32-byte hex string; see GenerateSecretKey.
 	SecretKey string `yaml:"secret_key"`
+
+	// APITokens grant full control through the JSON API, which is how the
+	// Terraform provider and the Kubernetes reconciler drive runnerforge. They
+	// live here rather than in the database because they grant control over the
+	// thing that would store them.
+	APITokens []string `yaml:"api_tokens"`
 
 	// OIDC gates the web UI behind an identity provider. Leaving the issuer
 	// empty leaves the UI open, which runnerforge warns about at startup and on
@@ -116,6 +123,23 @@ func (c *Config) Validate() error {
 		return err
 	}
 	return nil
+}
+
+// HasAPIToken reports whether a presented token is configured.
+//
+// The comparison is constant time so a valid token cannot be discovered a
+// character at a time.
+func (c *Config) HasAPIToken(presented string) bool {
+	if presented == "" {
+		return false
+	}
+	var ok bool
+	for _, want := range c.APITokens {
+		if subtle.ConstantTimeCompare([]byte(want), []byte(presented)) == 1 {
+			ok = true
+		}
+	}
+	return ok
 }
 
 // Key decodes SecretKey into raw bytes.

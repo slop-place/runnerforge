@@ -1,0 +1,136 @@
+# Every linter golangci-lint ships is enabled, then a small number are turned
+# off again. Each exclusion is a linter that is either incompatible with another
+# enabled linter, or actively at odds with this project's design. They are
+# listed with reasons rather than silently dropped.
+#
+# Everything not listed here passes with zero issues.
+version: "2"
+
+linters:
+  default: all
+  disable:
+    # Requires every struct literal to set every field. Impossible to satisfy
+    # alongside any options struct.
+    - exhaustruct
+    - exhaustruct_v5
+
+    # Bans short identifiers. Contradicts Go's own conventions for receivers,
+    # loop indices, and `w, r http.ResponseWriter, *http.Request`.
+    - varnamelen
+
+    # Prescriptive blank-line placement. wsl and wsl_v5 are two generations of
+    # the same linter and disagree with each other, so both cannot pass.
+    - wsl
+    - wsl_v5
+    - nlreturn
+
+    # Denies every import unless explicitly allowlisted. Without a site-specific
+    # policy it fails every file.
+    - depguard
+
+    # Bans dynamic errors, requiring a package-level sentinel for every message.
+    # This codebase returns contextual errors ("cloud %q: size %q has no
+    # flavor"), which tell an operator more than a sentinel would.
+    - err113
+
+    # Bans the canonical `if err := f(); err != nil { ... }`.
+    - noinlineerr
+
+    # Bans returning interfaces from constructors. The cloud and forge driver
+    # registries exist precisely to return interfaces.
+    - ireturn
+
+    # Bans package-level variables and init(). Driver self-registration through
+    # init() is the pattern database/sql and image/png use, and is what keeps
+    # drivers decoupled from the controller.
+    - gochecknoglobals
+    - gochecknoinits
+
+    # Enforces a house style for JSON tags. These tags mirror the GitHub,
+    # GitLab, Forgejo, Docker and OpenStack APIs and must match them exactly.
+    - tagliatelle
+
+    # Cosmetic struct-tag alignment; conflicts with gofmt's own alignment.
+    - tagalign
+
+    # Terraform's plugin framework requires one method set per resource, and
+    # those methods are the same shape by design. Reporting five CRUD
+    # implementations as duplicates of each other is noise, not a finding.
+    - dupl
+
+    # Superseded by gomodguard_v2, which stays enabled.
+    - gomodguard
+
+    # Requires every test to live in a separate _test package. The most valuable
+    # unit tests here cover unexported logic — the scaling rules, the log
+    # de-framing, the redirect vetting — which is only reachable in-package.
+    - testpackage
+
+  settings:
+    wrapcheck:
+      ignore-sigs:
+        - .Errorf(
+        - errors.New(
+        - errors.Join(
+        - errors.Unwrap(
+        - .Wrap(
+        - .WithContext(
+      ignore-package-globs:
+        - github.com/slop-place/runnerforge/*
+    cyclop:
+      max-complexity: 20
+    gocognit:
+      min-complexity: 30
+    funlen:
+      lines: 130
+      statements: 80
+    lll:
+      line-length: 130
+    revive:
+      rules:
+        - name: exported
+        - name: package-comments
+
+  exclusions:
+    rules:
+      - path: internal/provider/resource_.*\.go
+        linters:
+          # Schema attribute names are keys in a literal map describing an
+          # external contract. Extracting "name" and "enabled" to constants
+          # makes the schema harder to read against Terraform's own docs.
+          - goconst
+      - path: _test\.go
+        linters:
+          # Tests exercise failure paths and build fixtures, so the limits that
+          # keep production code readable get in the way.
+          - dupl
+          - funlen
+          - gocognit
+          - cyclop
+          - gocyclo
+          - maintidx
+          - errcheck
+          - noctx
+          - gosec
+          - wrapcheck
+          - contextcheck
+          - forcetypeassert
+          - errchkjson
+          - lll
+          # Test fixtures repeat literals by nature; naming each one hurts more
+          # than it helps when the literal is the point.
+          - goconst
+          - mnd
+          # These tests drive shared external services (a forge, a Docker
+          # daemon), so running them in parallel would make them flake.
+          - paralleltest
+          - tparallel
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

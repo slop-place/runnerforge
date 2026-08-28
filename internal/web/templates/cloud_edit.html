@@ -13,6 +13,8 @@
   {{template "fields" .Fields}}
   <div class="actions">
     <button>Save</button>
+    <a class="ghost" href="/export/cloud/{{.Cloud.ID}}/hcl">As Terraform</a>
+    <a class="ghost" href="/export/cloud/{{.Cloud.ID}}/crd">As Kubernetes</a>
     <a class="ghost danger" href="/clouds/{{.Cloud.ID}}/delete">Delete cloud</a>
   </div>
 </form>

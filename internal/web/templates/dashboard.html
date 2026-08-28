@@ -16,6 +16,14 @@ running after its job finished is a bill, which is what the reaper is for.</p>
   </div>
 </div>
 
+<h2>Take it away as code</h2>
+<p class="lede">Everything configured here renders as Terraform or as Kubernetes
+custom resources, with secrets left as references rather than values.</p>
+<div class="actions">
+  <a class="ghost" href="/export/all/hcl">Whole config as Terraform</a>
+  <a class="ghost" href="/export/all/crd">Whole config as Kubernetes</a>
+</div>
+
 <h2>Pools</h2>
 <div hx-get="/partials/pools" hx-trigger="load, every 5s" hx-swap="innerHTML">
   <p class="muted">loading…</p>
