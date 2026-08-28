@@ -1,6 +1,6 @@
 {{define "content"}}
 <h1>Machines</h1>
-<div hx-get="/partials/instances" hx-trigger="load, every 3s" hx-swap="innerHTML">
-  <p class="muted">loading…</p>
+<div hx-get="/partials/instances" hx-trigger="every 3s" hx-swap="innerHTML">
+  {{template "instances-table" .}}
 </div>
 {{end}}

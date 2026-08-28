@@ -25,17 +25,17 @@ custom resources, with secrets left as references rather than values.</p>
 </div>
 
 <h2>Pools</h2>
-<div hx-get="/partials/pools" hx-trigger="load, every 5s" hx-swap="innerHTML">
-  <p class="muted">loading…</p>
+<div hx-get="/partials/pools" hx-trigger="every 5s" hx-swap="innerHTML">
+  {{template "pools-table" .}}
 </div>
 
 <h2>Machines</h2>
-<div hx-get="/partials/instances" hx-trigger="load, every 3s" hx-swap="innerHTML">
-  <p class="muted">loading…</p>
+<div hx-get="/partials/instances" hx-trigger="every 3s" hx-swap="innerHTML">
+  {{template "instances-table" .}}
 </div>
 
 <h2>Recent activity</h2>
-<div hx-get="/partials/events" hx-trigger="load, every 5s" hx-swap="innerHTML">
-  <p class="muted">loading…</p>
+<div hx-get="/partials/events" hx-trigger="every 5s" hx-swap="innerHTML">
+  {{template "events-table" .}}
 </div>
 {{end}}

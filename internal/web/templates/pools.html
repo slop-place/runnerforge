@@ -2,8 +2,8 @@
 <h1>Pools</h1>
 <p class="lede">A pool binds one forge to one cloud with one machine shape. Jobs
 whose labels this pool covers get a machine of that shape.</p>
-<div hx-get="/partials/pools" hx-trigger="load, every 5s" hx-swap="innerHTML">
-  <p class="muted">loading…</p>
+<div hx-get="/partials/pools" hx-trigger="every 5s" hx-swap="innerHTML">
+  {{template "pools-table" .}}
 </div>
 
 <h2>Add a pool</h2>

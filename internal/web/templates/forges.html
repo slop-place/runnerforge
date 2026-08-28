@@ -8,22 +8,7 @@ that scope.</p>
   <thead><tr><th>Name</th><th>Kind</th><th>Scope</th><th>Status</th><th></th></tr></thead>
   <tbody>
   {{range .Forges}}
-    <tr class="{{if not .Enabled}}off{{end}}">
-      <td><a href="/forges/{{.ID}}">{{.Name}}</a></td>
-      <td><span class="tag">{{.Kind}}</span></td>
-      <td><code class="dim">{{scope .Settings}}</code></td>
-      <td>
-        {{if eq .Status "ok"}}<span class="ok">reachable</span>
-        {{else if .Status}}<span class="bad" title="{{.StatusDetail}}">error</span>
-        {{else}}<span class="muted">unchecked</span>{{end}}
-      </td>
-      <td class="right">
-        <form hx-post="/forges/{{.ID}}/check" hx-target="closest tr" hx-swap="outerHTML" class="inline">
-          <button class="ghost">test</button>
-        </form>
-        <a class="ghost" href="/forges/{{.ID}}">edit</a>
-      </td>
-    </tr>
+    {{template "forge-row" .}}
   {{else}}
     <tr><td colspan="5" class="empty">No forges configured yet.</td></tr>
   {{end}}

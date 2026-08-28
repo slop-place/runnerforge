@@ -83,10 +83,22 @@ export RF_TEST_GITHUB_TOKEN=$(gh auth token)
 export RF_TEST_GITHUB_OWNER=your-org RF_TEST_GITHUB_REPO=your-scratch-repo
 ```
 
+The web console has end-to-end tests of its own, driven through a real Chrome:
+they click through the forms, watch a queued job turn into a machine on the
+page without reloading it, and read the exported Terraform and Kubernetes
+config off the screen. Only the cloud and the forge are in-process fakes;
+everything between the browser and the database is production code. They skip
+themselves when no Chrome is installed.
+
+```sh
+go test ./internal/web/ -run TestUI -v   # the console, in a browser
+RF_TEST_UI_HEADED=1 go test ./internal/web/ -run TestUI   # watch it happen
+```
+
 Every end-to-end test asserts that no machine and no runner registration
 survives the run. A test that leaks is a failing test.
 
-219 tests, race-clean, and both modules pass every golangci-lint linter. The Docker and OpenStack
+247 tests, race-clean, and both modules pass every golangci-lint linter. The Docker and OpenStack
 drivers are tested against stub Engine and Nova/Neutron APIs, so their HTTP
 layers are covered without a daemon or a cloud account; the real-cloud
 integration test is separate and skips unless `RF_TEST_OS_*` is set.

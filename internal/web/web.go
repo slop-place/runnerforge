@@ -70,6 +70,8 @@ const (
 	centsThreshold = 0.01
 	// costWindow is how far back the spend figures look.
 	costWindow = 24 * time.Hour
+	// headerTrue is the value htmx sets on the headers it adds.
+	headerTrue = "true"
 	// listLimit is how many rows the machine and event tables show.
 	listLimit = 50
 	// secondsPerMinute and minutesPerHour format ages in the tables.
@@ -314,10 +316,23 @@ func (s *Server) render(w http.ResponseWriter, page string, v view) {
 }
 
 func (s *Server) renderPartial(w http.ResponseWriter, name string, v view) {
+	s.renderFragment(w, name, v)
+}
+
+// renderFragment writes one partial with whatever data it expects. Row
+// partials take a single record rather than the whole view.
+func (s *Server) renderFragment(w http.ResponseWriter, name string, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := s.tpl["_partials"].ExecuteTemplate(w, name, v); err != nil {
+	if err := s.tpl["_partials"].ExecuteTemplate(w, name, data); err != nil {
 		s.log.Error("render partial", "name", name, "err", err)
 	}
+}
+
+// htmxRequest reports whether htmx issued this request and is therefore going
+// to swap the response into the page. Answering one of those with a redirect
+// to a whole page puts a whole page inside whatever element was targeted.
+func htmxRequest(r *http.Request) bool {
+	return r.Header.Get("HX-Request") == headerTrue
 }
 
 // fail redirects back with an error message. Configuration mistakes are the
@@ -386,6 +401,18 @@ func (s *Server) dashboard(w http.ResponseWriter, r *http.Request) {
 	// A day is the window an operator can still do something about.
 	if sp, err := s.db.SpendSince(ctx, time.Now().Add(-costWindow)); err == nil {
 		v.Stats.Spend = sp
+	}
+	if v.Pools, err = s.poolRows(ctx); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if v.Instances, err = s.db.RecentInstances(ctx, listLimit); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if v.Events, err = s.db.Events(ctx, listLimit); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	v.Stats.Pools = len(pools)
 	for _, in := range live {
@@ -537,6 +564,12 @@ func (s *Server) checkCloud(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.ctrl.CheckCloud(ctx, c)
+	// The button targets its own row; give it a row. Without htmx the form is
+	// an ordinary post and the list is the right place to land.
+	if htmxRequest(r) {
+		s.renderFragment(w, "cloud-row", c)
+		return
+	}
 	s.redirect(w, r, "/clouds", "", "")
 }
 
@@ -725,6 +758,10 @@ func (s *Server) checkForge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.ctrl.CheckForge(ctx, f)
+	if htmxRequest(r) {
+		s.renderFragment(w, "forge-row", f)
+		return
+	}
 	s.redirect(w, r, "/forges", "", "")
 }
 
@@ -744,6 +781,10 @@ func (s *Server) pools(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(v.Clouds) > 0 {
 		v.Sizes, v.Images = v.Clouds[0].Sizes, v.Clouds[0].Images
+	}
+	if v.Pools, err = s.poolRows(ctx); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 	s.render(w, "pools", v)
 }
@@ -863,7 +904,13 @@ func validatePool(p *store.Pool) error {
 // ---- instances and events ----
 
 func (s *Server) instances(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "instances", s.base(r, "Machines", "instances"))
+	v := s.base(r, "Machines", "instances")
+	var err error
+	if v.Instances, err = s.db.RecentInstances(r.Context(), listLimit); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.render(w, "instances", v)
 }
 
 func (s *Server) instance(w http.ResponseWriter, r *http.Request) {
@@ -890,7 +937,13 @@ func (s *Server) destroyInstance(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
-	s.render(w, "events", s.base(r, "Events", "events"))
+	v := s.base(r, "Events", "events")
+	var err error
+	if v.Events, err = s.db.Events(r.Context(), listLimit); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.render(w, "events", v)
 }
 
 func (s *Server) reap(w http.ResponseWriter, r *http.Request) {
@@ -904,21 +957,29 @@ func (s *Server) reap(w http.ResponseWriter, r *http.Request) {
 
 // ---- partials ----
 
-func (s *Server) partialPools(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
+// poolRows builds the pool table's contents.
+func (s *Server) poolRows(ctx context.Context) ([]poolRow, error) {
 	pools, err := s.db.Pools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	since := time.Now().Add(-costWindow)
+	rows := make([]poolRow, 0, len(pools))
+	for i := range pools {
+		live, _ := s.db.LiveInstances(ctx, pools[i].ID)
+		spend, _ := s.db.PoolSpendSince(ctx, pools[i].ID, since)
+		rows = append(rows, poolRow{Pool: pools[i], Live: len(live), Spend: spend})
+	}
+	return rows, nil
+}
+
+func (s *Server) partialPools(w http.ResponseWriter, r *http.Request) {
+	rows, err := s.poolRows(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	v := view{}
-	since := time.Now().Add(-costWindow)
-	for i := range pools {
-		live, _ := s.db.LiveInstances(ctx, pools[i].ID)
-		spend, _ := s.db.PoolSpendSince(ctx, pools[i].ID, since)
-		v.Pools = append(v.Pools, poolRow{Pool: pools[i], Live: len(live), Spend: spend})
-	}
-	s.renderPartial(w, "pools-table", v)
+	s.renderPartial(w, "pools-table", view{Pools: rows})
 }
 
 func (s *Server) partialInstances(w http.ResponseWriter, r *http.Request) {

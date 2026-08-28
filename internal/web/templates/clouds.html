@@ -8,23 +8,7 @@ definition works on any of them.</p>
   <thead><tr><th>Name</th><th>Driver</th><th>Sizes</th><th>Images</th><th>Status</th><th></th></tr></thead>
   <tbody>
   {{range .Clouds}}
-    <tr class="{{if not .Enabled}}off{{end}}">
-      <td><a href="/clouds/{{.ID}}">{{.Name}}</a></td>
-      <td><span class="tag">{{.Driver}}</span></td>
-      <td class="num">{{len .Sizes}}</td>
-      <td class="num">{{len .Images}}</td>
-      <td>
-        {{if eq .Status "ok"}}<span class="ok">reachable</span>
-        {{else if .Status}}<span class="bad" title="{{.StatusDetail}}">error</span>
-        {{else}}<span class="muted">unchecked</span>{{end}}
-      </td>
-      <td class="right">
-        <form hx-post="/clouds/{{.ID}}/check" hx-target="closest tr" hx-swap="outerHTML" class="inline">
-          <button class="ghost">test</button>
-        </form>
-        <a class="ghost" href="/clouds/{{.ID}}">edit</a>
-      </td>
-    </tr>
+    {{template "cloud-row" .}}
   {{else}}
     <tr><td colspan="6" class="empty">No clouds configured yet.</td></tr>
   {{end}}

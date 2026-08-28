@@ -1,3 +1,42 @@
+{{define "cloud-row"}}
+    <tr class="{{if not .Enabled}}off{{end}}">
+      <td><a href="/clouds/{{.ID}}">{{.Name}}</a></td>
+      <td><span class="tag">{{.Driver}}</span></td>
+      <td class="num">{{len .Sizes}}</td>
+      <td class="num">{{len .Images}}</td>
+      <td>
+        {{if eq .Status "ok"}}<span class="ok">reachable</span>
+        {{else if .Status}}<span class="bad" title="{{.StatusDetail}}">error</span>
+        {{else}}<span class="muted">unchecked</span>{{end}}
+      </td>
+      <td class="right">
+        <form hx-post="/clouds/{{.ID}}/check" hx-target="closest tr" hx-swap="outerHTML" class="inline">
+          <button class="ghost">test</button>
+        </form>
+        <a class="ghost" href="/clouds/{{.ID}}">edit</a>
+      </td>
+    </tr>
+{{end}}
+
+{{define "forge-row"}}
+    <tr class="{{if not .Enabled}}off{{end}}">
+      <td><a href="/forges/{{.ID}}">{{.Name}}</a></td>
+      <td><span class="tag">{{.Kind}}</span></td>
+      <td><code class="dim">{{scope .Settings}}</code></td>
+      <td>
+        {{if eq .Status "ok"}}<span class="ok">reachable</span>
+        {{else if .Status}}<span class="bad" title="{{.StatusDetail}}">error</span>
+        {{else}}<span class="muted">unchecked</span>{{end}}
+      </td>
+      <td class="right">
+        <form hx-post="/forges/{{.ID}}/check" hx-target="closest tr" hx-swap="outerHTML" class="inline">
+          <button class="ghost">test</button>
+        </form>
+        <a class="ghost" href="/forges/{{.ID}}">edit</a>
+      </td>
+    </tr>
+{{end}}
+
 {{define "pools-table"}}
 {{if not .Pools}}
   <p class="empty">No pools yet. <a href="/pools/new">Create one</a> to start serving jobs.</p>
