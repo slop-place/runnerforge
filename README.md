@@ -58,6 +58,7 @@ the per-forge gotchas that shaped it.
 | JSON API | working |
 | Terraform provider | working |
 | Kubernetes CRDs | working |
+| Prometheus metrics | working |
 | Hetzner, DigitalOcean, Kubernetes drivers | not started |
 | Webhook ingestion (push instead of polling) | not started |
 
@@ -98,13 +99,66 @@ RF_TEST_UI_HEADED=1 go test ./internal/web/ -run TestUI   # watch it happen
 Every end-to-end test asserts that no machine and no runner registration
 survives the run. A test that leaks is a failing test.
 
-247 tests, race-clean, and both modules pass every golangci-lint linter. The Docker and OpenStack
+262 tests, race-clean, and both modules pass every golangci-lint linter. The Docker and OpenStack
 drivers are tested against stub Engine and Nova/Neutron APIs, so their HTTP
 layers are covered without a daemon or a cloud account; the real-cloud
 integration test is separate and skips unless `RF_TEST_OS_*` is set.
 
 `golangci-lint run ./...` passes with **every linter enabled** except a
 documented deny-list in `.golangci.yml`, each entry with a reason.
+
+## Metrics
+
+Everything the controller does is published in Prometheus format at `/metrics`,
+along with the Go runtime and process collectors. It is on by default.
+
+```yaml
+metrics:
+  enabled: true          # default
+  path: /metrics         # default
+  require_token: false   # when true, needs one of api_tokens as a bearer
+```
+
+The endpoint sits outside the sign-in gate, because Prometheus cannot complete
+an authorization code flow — a `/metrics` behind OIDC is a `/metrics` that
+silently collects login redirects. It publishes no credentials, but it does
+name every pool, cloud and forge and say what they cost, so turn
+`require_token` on wherever that matters.
+
+The split worth knowing about: counters are accumulated as things happen, and
+anything that is a fact about the present is read from the database when
+Prometheus scrapes. After a restart a counter starts at zero and Prometheus
+works that out, but `runnerforge_instances` has to be right on the first
+scrape, and only the database knows.
+
+Grouped by the question they answer:
+
+| Question | Metrics |
+|---|---|
+| Is it keeping up? | `pool_jobs_queued`, `pool_jobs_uncovered`, `pool_jobs_at_ceiling`, `machine_provision_seconds`, `machine_ready_seconds` |
+| Is it leaking? | `instances` by state against `reaped_machines_total`, `reaped_runners_total`, `reaped_rows_total` |
+| What is it costing? | `spend_usd`, `burn_rate_usd_per_hour`, `machine_cost_usd_total`, `machine_billed_seconds_total`, `spend_unpriced_machines` |
+| Is anything broken? | `cloud_requests_total`, `forge_requests_total` and their `_seconds` histograms, by operation and outcome |
+| Is the loop alive? | `last_reconcile_timestamp_seconds`, `last_reap_timestamp_seconds`, `reconcile_duration_seconds` |
+
+Every cloud and forge call is timed from the one place clients are built, so a
+driver written later is measured the day it is written without knowing about
+it. `ErrNotFound` is not counted as an error: asking about a machine that is
+already gone is how the controller learns it is gone, and counting that would
+make every healthy teardown look like an outage.
+
+Label values are bounded on purpose. HTTP requests are labelled by the matched
+route pattern rather than the path, failed launches by the stage that failed
+rather than the error text, and reaped machines by a category rather than the
+sentence an operator reads in the event log. The detail stays in the event log,
+where it does not multiply the series count.
+
+Ready-made alerting rules and a scrape config are in
+[`deploy/monitoring/`](deploy/monitoring/).
+
+```sh
+curl -s localhost:8080/metrics | grep '^runnerforge_'
+```
 
 ## Running it
 

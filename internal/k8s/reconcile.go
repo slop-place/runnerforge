@@ -11,6 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	"github.com/slop-place/runnerforge/internal/metrics"
 	"github.com/slop-place/runnerforge/internal/store"
 )
 
@@ -91,7 +92,9 @@ func (r *Reconciler) reconcileClouds(ctx context.Context) error {
 	var errs []error
 	for i := range items {
 		obj := &items[i]
-		if err := r.applyCloud(ctx, obj); err != nil {
+		err := r.applyCloud(ctx, obj)
+		metrics.K8sObject("Cloud", err)
+		if err != nil {
 			errs = append(errs, err)
 			r.setStatus(ctx, cloudGVR, obj, "Error", err.Error(), nil)
 		}
@@ -266,9 +269,11 @@ func (r *Reconciler) reconcileForges(ctx context.Context) error {
 		f.Credentials = store.Secret{}
 		maps.Copy(f.Credentials, creds)
 
-		if err := r.db.WithContext(ctx).Save(&f).Error; err != nil {
-			errs = append(errs, fmt.Errorf("apply forge %s: %w", name, err))
-			r.setStatus(ctx, forgeGVR, obj, "Error", err.Error(), nil)
+		saveErr := r.db.WithContext(ctx).Save(&f).Error
+		metrics.K8sObject("Forge", saveErr)
+		if saveErr != nil {
+			errs = append(errs, fmt.Errorf("apply forge %s: %w", name, saveErr))
+			r.setStatus(ctx, forgeGVR, obj, "Error", saveErr.Error(), nil)
 			continue
 		}
 		//nolint:gosec // the id is a database primary key, not attacker input
@@ -286,7 +291,9 @@ func (r *Reconciler) reconcilePools(ctx context.Context) error {
 	var errs []error
 	for i := range items {
 		obj := &items[i]
-		if err := r.applyPool(ctx, obj); err != nil {
+		err := r.applyPool(ctx, obj)
+		metrics.K8sObject("Pool", err)
+		if err != nil {
 			errs = append(errs, err)
 			r.setStatus(ctx, poolGVR, obj, "Error", err.Error(), nil)
 		}

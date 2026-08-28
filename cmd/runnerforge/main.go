@@ -28,6 +28,7 @@ import (
 	"github.com/slop-place/runnerforge/internal/config"
 	"github.com/slop-place/runnerforge/internal/controller"
 	"github.com/slop-place/runnerforge/internal/k8s"
+	"github.com/slop-place/runnerforge/internal/metrics"
 	"github.com/slop-place/runnerforge/internal/store"
 	"github.com/slop-place/runnerforge/internal/web"
 )
@@ -189,6 +190,14 @@ func serve(ctx context.Context, args []string) error {
 	} else {
 		log.Warn("web UI is NOT protected: anyone who can reach it can add a cloud " +
 			"and destroy machines. Set oidc.issuer to require sign-in.")
+	}
+
+	// Published before anything starts serving, so a scrape that lands during
+	// startup already knows what it is looking at.
+	metrics.SetBuildInfo(version, cfg.ID)
+	if cfg.Metrics.Enabled == nil || *cfg.Metrics.Enabled {
+		log.Info("publishing metrics", "path", cfg.Metrics.Route(),
+			"token_required", cfg.Metrics.RequireToken)
 	}
 
 	srv := &http.Server{

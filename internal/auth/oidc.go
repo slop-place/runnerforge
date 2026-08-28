@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/slop-place/runnerforge/internal/metrics"
 	"golang.org/x/oauth2"
 )
 
@@ -310,10 +311,12 @@ func (a *Authenticator) callback(w http.ResponseWriter, r *http.Request) {
 		Expires: time.Now().Add(a.cfg.SessionTTL),
 	}
 	if err := setSession(w, a.key, user, a.secure); err != nil {
+		metrics.AuthAttempt("error")
 		http.Error(w, "could not start session", http.StatusInternalServerError)
 		return
 	}
 	clearStateCookie(w, a.secure)
+	metrics.AuthAttempt("success")
 	a.log.Info("operator signed in", "user", user.Display())
 	//nolint:gosec // G710: safeReturnPath admits only same-origin absolute paths.
 	http.Redirect(w, r, ret, http.StatusFound)
@@ -361,6 +364,10 @@ func (a *Authenticator) logout(w http.ResponseWriter, r *http.Request) {
 // the query string supplied is echoed back, so there is nothing here to inject
 // into.
 func (a *Authenticator) deny(w http.ResponseWriter, _ *http.Request, msg string) {
+	// Every refusal in this flow goes through here, so this is the one place
+	// that has to count them. The reason is deliberately not a label: several
+	// of these messages are provider-supplied.
+	metrics.AuthAttempt("denied")
 	clearStateCookie(w, a.secure)
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("X-Content-Type-Options", "nosniff")

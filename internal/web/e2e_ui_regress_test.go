@@ -21,7 +21,7 @@ func TestUILiveTablesWorkOnFirstPaint(t *testing.T) {
 	u := newUI(t)
 	u.seedCloudAndForge()
 	u.addPool("first-paint")
-	u.forge.enqueue("job-1", "first-paint")
+	u.forge.enqueue("first-paint")
 	u.waitFor("a machine", func() bool { return u.cloud.live() == 1 })
 
 	// A freshly loaded page, with no poll having happened yet: the table is
@@ -112,7 +112,7 @@ func TestUIReapButton(t *testing.T) {
 	u := newUI(t)
 	u.seedCloudAndForge()
 	u.addPool("reapable")
-	u.forge.enqueue("job-1", "reapable")
+	u.forge.enqueue("reapable")
 	u.waitFor("a machine", func() bool { return u.cloud.live() == 1 })
 
 	// Lose the row, the way a restore from an old backup would. The machine
@@ -129,5 +129,46 @@ func TestUIReapButton(t *testing.T) {
 	u.goTo("/")
 	u.run("reap", chromedp.Click(`form[hx-post="/reap"] button`, chromedp.ByQuery))
 	u.waitFor("the reaper to find the orphan", func() bool { return u.cloud.live() == 0 })
+	u.assertQuiet()
+}
+
+// TestMetricsEndpointIsReachableWithoutSigningIn checks the scrape endpoint
+// sits outside the sign-in gate.
+//
+// Prometheus cannot complete an authorization code flow, so a /metrics behind
+// OIDC is a /metrics nothing can read — and the failure is silent: the console
+// works, the endpoint answers, and every scrape quietly collects a redirect to
+// a login page.
+func TestMetricsEndpointIsReachableWithoutSigningIn(t *testing.T) {
+	u := newUI(t)
+	u.seedCloudAndForge()
+	u.addPool("scraped")
+	u.forge.enqueue("scraped")
+	u.waitFor("a machine", func() bool { return u.cloud.live() == 1 })
+
+	body, code := u.get("/metrics")
+	if code != 200 {
+		t.Fatalf("GET /metrics returned %d", code)
+	}
+	for _, want := range []string{
+		"# HELP runnerforge_instances",
+		"# TYPE runnerforge_instances gauge",
+		`runnerforge_instances{cloud="cloud-a",pool="pool-a",state="booting"}`,
+		`runnerforge_machines_created_total{cloud="cloud-a",pool="pool-a"}`,
+		`runnerforge_pool_max_instances{pool="pool-a"} 2`,
+		// The endpoint is served through the same middleware as everything
+		// else, so a scrape is itself a timed request.
+		"runnerforge_http_requests_total",
+		"go_goroutines",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the scrape does not contain %q", want)
+		}
+	}
+	// A stored credential must never reach a page an operator will paste into
+	// a ticket.
+	if strings.Contains(body, "sk-") {
+		t.Error("the scrape looks like it contains a credential")
+	}
 	u.assertQuiet()
 }

@@ -1,0 +1,17 @@
+# A Prometheus scrape config for runnerforge.
+#
+# The endpoint is unauthenticated by default, which is the normal arrangement
+# for a target on a private network. It publishes no credentials, but it does
+# name every pool, cloud and forge and say what they cost — set
+# metrics.require_token in runnerforge.yaml and uncomment the authorization
+# block below wherever that matters.
+scrape_configs:
+  - job_name: runnerforge
+    # Machine state changes on the reconcile interval; there is nothing to see
+    # faster than that.
+    scrape_interval: 30s
+    static_configs:
+      - targets: ["runnerforge:8080"]
+    # authorization:
+    #   type: Bearer
+    #   credentials_file: /etc/prometheus/runnerforge-token

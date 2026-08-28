@@ -230,10 +230,14 @@ func (f *uiForge) Bootstrap(
 }
 
 // enqueue makes a job wait for a runner with these labels.
-func (f *uiForge) enqueue(id string, labels ...string) {
+func (f *uiForge) enqueue(labels ...string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.queue = append(f.queue, forge.Job{ID: id, Labels: labels, Repo: "acme/site", QueuedAt: time.Now().UTC()})
+	f.n++
+	f.queue = append(f.queue, forge.Job{
+		ID: fmt.Sprintf("job-%d", f.n), Labels: labels,
+		Repo: "acme/site", QueuedAt: time.Now().UTC(),
+	})
 }
 
 // subset reports whether every label the job asks for is one the pool offers.

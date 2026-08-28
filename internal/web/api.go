@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/slop-place/runnerforge/internal/metrics"
 	"github.com/slop-place/runnerforge/internal/store"
 )
 
@@ -34,6 +35,7 @@ var errUnauthorized = errors.New("a valid API token is required")
 func (s *Server) apiAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if len(s.cfg.APITokens) == 0 {
+			metrics.APIAuth("unconfigured")
 			writeJSONError(w, http.StatusForbidden,
 				"no API tokens are configured; set api_tokens in the config to use the API")
 			return
@@ -41,9 +43,11 @@ func (s *Server) apiAuth(next http.HandlerFunc) http.HandlerFunc {
 		presented := strings.TrimPrefix(r.Header.Get(apiTokenHeader), "Bearer ")
 		presented = strings.TrimSpace(presented)
 		if !s.cfg.HasAPIToken(presented) {
+			metrics.APIAuth("denied")
 			writeJSONError(w, http.StatusUnauthorized, errUnauthorized.Error())
 			return
 		}
+		metrics.APIAuth("success")
 		next(w, r)
 	}
 }

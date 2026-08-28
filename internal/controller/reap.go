@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/slop-place/runnerforge/internal/cloud"
+	"github.com/slop-place/runnerforge/internal/metrics"
 	"github.com/slop-place/runnerforge/internal/store"
 )
 
@@ -26,6 +27,7 @@ const namePrefix = "rf-"
 //
 // It is the first thing to run at startup and it runs on a timer thereafter.
 func (c *Controller) Reap(ctx context.Context) error {
+	start := time.Now()
 	var errs []error
 	if err := c.reapClouds(ctx); err != nil {
 		errs = append(errs, err)
@@ -36,7 +38,9 @@ func (c *Controller) Reap(ctx context.Context) error {
 	if err := c.reapRows(ctx); err != nil {
 		errs = append(errs, err)
 	}
-	return errors.Join(errs...)
+	joined := errors.Join(errs...)
+	metrics.ReapPass(time.Since(start), joined)
+	return joined
 }
 
 // reapClouds destroys machines that exist in a cloud but should not.
@@ -143,6 +147,9 @@ func (c *Controller) reapMachine(
 	}
 
 	c.log.Warn("reaping machine", "cloud", cl.Name, "name", m.Name, "reason", reason)
+	// The counter's label is the category, not the sentence: an age in the
+	// message would be a new label value for every machine.
+	metrics.ReapedMachine(cl.Name, reapCategory(reason))
 	if err := prov.Delete(ctx, m.ID); err != nil {
 		return fmt.Errorf("reap %s: %w", m.Name, err)
 	}
@@ -155,6 +162,24 @@ func (c *Controller) reapMachine(
 	}
 	c.db.Logf(ctx, "warn", "reap", nil, instID, "reaped %s from %s: %s", m.Name, cl.Name, reason)
 	return nil
+}
+
+// reapCategory maps a reap reason to a bounded label. The reasons carry detail
+// an operator wants to read — an age, a pool name — which is exactly what a
+// label must not contain.
+func reapCategory(reason string) string {
+	switch {
+	case strings.HasPrefix(reason, "no database record"):
+		return "no_record"
+	case strings.HasPrefix(reason, "already marked deleted"):
+		return "delete_failed"
+	case strings.HasPrefix(reason, "pool "):
+		return "pool_gone"
+	case strings.HasPrefix(reason, "exceeded max lifetime"):
+		return "max_lifetime"
+	default:
+		return "other"
+	}
 }
 
 // reapForges removes runner registrations whose machine is gone.
@@ -202,6 +227,7 @@ func (c *Controller) reapForges(ctx context.Context) error {
 				errs = append(errs, fmt.Errorf("forge %s: deprovision %s: %w", f.Name, r.Name, err))
 				continue
 			}
+			metrics.ReapedRunner(f.Name)
 			c.db.Logf(ctx, "warn", "reap", nil, nil,
 				"removed orphaned runner registration %s from %s", r.Name, f.Name)
 		}
@@ -226,6 +252,7 @@ func (c *Controller) reapRows(ctx context.Context) error {
 			if inst.State != store.StateDeleted {
 				c.db.Logf(ctx, "warn", "reap", nil, &inst.ID,
 					"closing out %s: its pool no longer exists", inst.Name)
+				metrics.ReapedRow("pool_gone")
 				_ = c.db.SetState(ctx, inst, store.StateDeleted)
 			}
 			continue
@@ -234,6 +261,7 @@ func (c *Controller) reapRows(ctx context.Context) error {
 			// Never got as far as creating anything. Give it a grace period in
 			// case a launch is in flight right now, then close it out.
 			if time.Since(inst.CreatedAt) > 10*time.Minute {
+				metrics.ReapedRow("never_created")
 				_ = c.db.SetState(ctx, inst, store.StateDeleted)
 			}
 			continue
@@ -251,6 +279,7 @@ func (c *Controller) reapRows(ctx context.Context) error {
 		if errors.Is(err, cloud.ErrNotFound) {
 			c.db.Logf(ctx, "info", "reap", &pool.ID, &inst.ID,
 				"closing out %s: machine no longer exists", inst.Name)
+			metrics.ReapedRow("machine_gone")
 			_ = c.db.SetState(ctx, inst, store.StateDeleted)
 		}
 	}

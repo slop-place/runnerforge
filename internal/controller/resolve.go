@@ -9,6 +9,7 @@ import (
 
 	"github.com/slop-place/runnerforge/internal/cloud"
 	"github.com/slop-place/runnerforge/internal/forge"
+	"github.com/slop-place/runnerforge/internal/metrics"
 	"github.com/slop-place/runnerforge/internal/store"
 )
 
@@ -49,6 +50,9 @@ func (r *resolver) Cloud(c *store.Cloud) (cloud.Provider, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cloud %q: %w", c.Name, err)
 	}
+	// Wrapping here means every driver is measured, including one written
+	// later by someone who never reads the metrics package.
+	p = metrics.WrapCloud(c.Name, p)
 	// Only the newest build of a given record is kept; older revisions fall out.
 	r.prune(r.clouds, c.ID)
 	r.clouds[key] = p
@@ -72,6 +76,7 @@ func (r *resolver) Forge(f *store.Forge) (forge.Forge, error) {
 	if err != nil {
 		return nil, fmt.Errorf("forge %q: %w", f.Name, err)
 	}
+	c = metrics.WrapForge(c)
 	r.prune(r.forges, f.ID)
 	r.forges[key] = c
 	return c, nil

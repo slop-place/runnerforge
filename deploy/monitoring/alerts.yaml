@@ -1,0 +1,110 @@
+# Prometheus alerting rules for runnerforge.
+#
+# These are the four things that actually go wrong with a runner controller.
+# Everything else it publishes is for reading a graph after one of these fires.
+groups:
+  - name: runnerforge
+    rules:
+      # A machine that outlives its pool's ceiling, or exists with no database
+      # row, was missed by the normal path. The reaper cleans up either way —
+      # that is what it is for — but a sustained rate means something upstream
+      # is broken, and every one of these was billing until it was caught.
+      - alert: RunnerforgeReapingMachines
+        expr: sum by (cloud, reason) (rate(runnerforge_reaped_machines_total[15m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "runnerforge is reaping machines on {{ $labels.cloud }} ({{ $labels.reason }})"
+          description: >-
+            The reaper is destroying machines the ordinary path should have
+            cleaned up. Each one was running, and billing, until it was caught.
+
+      # Jobs waiting with no machine coming. The pool is at max_instances and
+      # the ceiling, not the cloud, is what is holding CI up.
+      - alert: RunnerforgePoolAtCeiling
+        expr: runnerforge_pool_jobs_at_ceiling > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "pool {{ $labels.pool }} has been at its ceiling for 10 minutes"
+          description: >-
+            {{ $value }} job(s) are waiting because the pool is at
+            max_instances. Raise the ceiling or accept the queue.
+
+      # Machines that start, run nothing, and stop. The pool looks busy on
+      # every dashboard and produces no CI, which is the failure mode that
+      # takes longest to notice by hand.
+      - alert: RunnerforgeMachinesNeverClaimJobs
+        expr: |
+          sum by (pool) (rate(runnerforge_machines_destroyed_total{reason="stopped_unclaimed"}[30m]))
+            / sum by (pool) (rate(runnerforge_machines_destroyed_total[30m])) > 0.5
+        for: 20m
+        labels:
+          severity: critical
+        annotations:
+          summary: "most of {{ $labels.pool }}'s machines are finishing without a job"
+          description: >-
+            Machines are booting and stopping without ever claiming work.
+            Usually a bad runner image, a label mismatch, or a credential the
+            runner cannot use. Check the machine logs in the console.
+
+      # The loop has stopped. Nothing else in this file can fire meaningfully
+      # if this one is true.
+      - alert: RunnerforgeNotReconciling
+        expr: time() - runnerforge_last_reconcile_timestamp_seconds > 300
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "runnerforge has not reconciled for {{ $value | humanizeDuration }}"
+          description: >-
+            No pool has been evaluated recently. Queued jobs are not getting
+            machines and running machines are not being torn down.
+
+      # A cloud or forge that has started refusing. Provisioning stops here.
+      - alert: RunnerforgeProviderErrors
+        expr: |
+          sum by (cloud, operation) (rate(runnerforge_cloud_requests_total{result="error"}[10m]))
+            / sum by (cloud, operation) (rate(runnerforge_cloud_requests_total[10m])) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.cloud }} is failing {{ $labels.operation }} calls"
+
+      - alert: RunnerforgeForgeErrors
+        expr: |
+          sum by (forge, operation) (rate(runnerforge_forge_requests_total{result="error"}[10m]))
+            / sum by (forge, operation) (rate(runnerforge_forge_requests_total[10m])) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.forge }} is failing {{ $labels.operation }} calls"
+
+      # Spend, which is the reason this project exists. Set the threshold to
+      # something that would surprise you.
+      - alert: RunnerforgeSpendHigh
+        expr: sum(runnerforge_burn_rate_usd_per_hour) > 5
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "runnerforge is burning ${{ $value | printf \"%.2f\" }}/hour"
+          description: >-
+            The machines running right now would cost this much per hour if
+            none of them stopped. Check for a pool that is not tearing down.
+
+      # A machine stuck near its lifetime ceiling is a job that will be killed
+      # rather than finished.
+      - alert: RunnerforgeMachineStuck
+        expr: |
+          runnerforge_oldest_machine_age_seconds
+            / on (pool) runnerforge_pool_max_lifetime_seconds > 0.9
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "a machine in {{ $labels.pool }} is about to hit its lifetime ceiling"

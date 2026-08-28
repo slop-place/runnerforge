@@ -114,7 +114,7 @@ func TestUIPoolToRunningMachine(t *testing.T) {
 		t.Fatalf("%d machines exist before any job was queued", n)
 	}
 
-	u.forge.enqueue("job-1", "browser-test")
+	u.forge.enqueue("browser-test")
 
 	// The controller notices the job and provisions for it.
 	u.waitFor("the cloud to hold a machine", func() bool { return u.cloud.live() == 1 })

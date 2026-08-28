@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/slop-place/runnerforge/internal/cloud"
+	"github.com/slop-place/runnerforge/internal/metrics"
 	"github.com/slop-place/runnerforge/internal/store"
 )
 
@@ -16,7 +17,9 @@ import (
 func (c *Controller) CheckCloud(ctx context.Context, cl *store.Cloud) {
 	now := time.Now().UTC()
 	cl.StatusCheckAt = &now
-	if err := c.res.checkCloud(ctx, cl, c.Owner("")); err != nil {
+	err := c.res.checkCloud(ctx, cl, c.Owner(""))
+	metrics.CredentialCheck("cloud", cl.Name, err)
+	if err != nil {
 		cl.Status, cl.StatusDetail = "error", err.Error()
 	} else {
 		cl.Status, cl.StatusDetail = "ok", ""
@@ -30,7 +33,9 @@ func (c *Controller) CheckCloud(ctx context.Context, cl *store.Cloud) {
 func (c *Controller) CheckForge(ctx context.Context, f *store.Forge) {
 	now := time.Now().UTC()
 	f.StatusCheckAt = &now
-	if err := c.res.checkForge(ctx, f); err != nil {
+	err := c.res.checkForge(ctx, f)
+	metrics.CredentialCheck("forge", f.Name, err)
+	if err != nil {
 		f.Status, f.StatusDetail = "error", err.Error()
 	} else {
 		f.Status, f.StatusDetail = "ok", ""
@@ -90,7 +95,7 @@ func (c *Controller) DestroyInstance(ctx context.Context, id uint) error {
 	}
 
 	c.db.Logf(ctx, "warn", "destroy", &pool.ID, &inst.ID, "%s destroyed from the UI", inst.Name)
-	if err := c.destroy(ctx, prov, fg, &inst); err != nil {
+	if err := c.destroy(ctx, pool, prov, fg, &inst, "operator"); err != nil {
 		return fmt.Errorf("destroy %s: %w", inst.Name, err)
 	}
 	return nil

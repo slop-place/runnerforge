@@ -23,6 +23,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/slop-place/runnerforge/internal/metrics"
 	"github.com/slop-place/runnerforge/internal/store"
 )
 
@@ -149,6 +150,7 @@ func nsLabel(ns string) string {
 // Reconcile runs one pass: clouds, then forges, then pools, because a pool
 // refers to the other two by name and cannot be resolved before they exist.
 func (r *Reconciler) Reconcile(ctx context.Context) error {
+	start := time.Now()
 	var errs []error
 	if err := r.reconcileClouds(ctx); err != nil {
 		errs = append(errs, err)
@@ -162,7 +164,9 @@ func (r *Reconciler) Reconcile(ctx context.Context) error {
 	if err := r.pruneDeleted(ctx); err != nil {
 		errs = append(errs, err)
 	}
-	return errors.Join(errs...)
+	joined := errors.Join(errs...)
+	metrics.K8sPass(time.Since(start), joined)
+	return joined
 }
 
 // list fetches every object of a kind in the configured scope.

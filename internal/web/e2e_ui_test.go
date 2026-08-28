@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -264,6 +266,26 @@ func (u *ui) submit(what, page, form string, fields map[string]string, landed st
 	if landed != "" {
 		u.waitText(landed)
 	}
+}
+
+// get fetches a path from the server directly, without the browser. Used for
+// endpoints a browser is not the client for.
+func (u *ui) get(path string) (string, int) {
+	u.t.Helper()
+	req, err := http.NewRequestWithContext(u.t.Context(), http.MethodGet, u.base+path, nil)
+	if err != nil {
+		u.t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		u.t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		u.t.Fatal(err)
+	}
+	return string(body), resp.StatusCode
 }
 
 // count returns how many elements match, which is how these tests assert that

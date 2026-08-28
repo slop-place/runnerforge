@@ -19,6 +19,7 @@ import (
 
 	"github.com/slop-place/runnerforge/internal/auth"
 	"github.com/slop-place/runnerforge/internal/k8s"
+	"github.com/slop-place/runnerforge/internal/metrics"
 )
 
 // Config is the bootstrap file.
@@ -58,6 +59,9 @@ type Config struct {
 	// empty leaves the UI open, which runnerforge warns about at startup and on
 	// every page — reasonable on a trusted network, not otherwise.
 	OIDC auth.Config `yaml:"oidc"`
+
+	// Metrics publishes a Prometheus endpoint. On unless turned off.
+	Metrics metrics.Config `yaml:"metrics"`
 
 	// ReconcileInterval is how often each pool is evaluated.
 	ReconcileInterval time.Duration `yaml:"reconcile_interval"`

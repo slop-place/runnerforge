@@ -298,6 +298,18 @@ const (
 	StateFailed InstanceState = "failed"
 )
 
+// InstanceStates lists every state a machine can be in, in lifecycle order.
+//
+// Anything that reports per-state totals needs this: a state with nothing in it
+// still has to report zero, because a series that vanishes when a pool goes
+// quiet is a series nothing can alert on.
+func InstanceStates() []InstanceState {
+	return []InstanceState{
+		StatePending, StateProvisioning, StateBooting, StateIdle,
+		StateBusy, StateDraining, StateFailed, StateDeleted,
+	}
+}
+
 // Terminal reports whether no further cleanup is owed for this state.
 func (s InstanceState) Terminal() bool { return s == StateDeleted }
 

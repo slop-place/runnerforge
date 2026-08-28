@@ -16,6 +16,7 @@ import (
 	"github.com/slop-place/runnerforge/internal/cloud"
 	"github.com/slop-place/runnerforge/internal/config"
 	"github.com/slop-place/runnerforge/internal/forge"
+	"github.com/slop-place/runnerforge/internal/metrics"
 	"github.com/slop-place/runnerforge/internal/store"
 )
 
@@ -92,14 +93,20 @@ func (c *Controller) ReconcileAll(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	start := time.Now()
+
 	pools, err := c.db.EnabledPools(ctx)
 	if err != nil {
+		metrics.ReconcilePass(time.Since(start), err)
 		return err
 	}
 	var errs []error
 	for i := range pools {
 		p := &pools[i]
-		if err := c.reconcilePool(ctx, p); err != nil {
+		poolStart := time.Now()
+		err := c.reconcilePool(ctx, p)
+		metrics.PoolReconcile(p.Name, time.Since(poolStart), err)
+		if err != nil {
 			// One broken pool must not stop the others; a pool whose forge is
 			// unreachable should not prevent another pool's machines from
 			// being torn down.
@@ -107,7 +114,9 @@ func (c *Controller) ReconcileAll(ctx context.Context) error {
 			c.db.Logf(ctx, "error", "reconcile", &p.ID, nil, "%v", err)
 		}
 	}
-	return errors.Join(errs...)
+	joined := errors.Join(errs...)
+	metrics.ReconcilePass(time.Since(start), joined)
+	return joined
 }
 
 // reconcilePool advances every machine in one pool, then scales to demand.
@@ -151,6 +160,7 @@ func (c *Controller) reconcilePool(ctx context.Context, pool *store.Pool) error 
 	}
 
 	plan := planScale(pool, matchingJobs(jobs, pool.Labels), live)
+	metrics.ScaleDecision(pool.Name, plan.queued, plan.uncovered, plan.atCeiling)
 	if plan.atCeiling > 0 {
 		c.db.Logf(ctx, "warn", "scale", &pool.ID, nil,
 			"%d job(s) waiting but pool is at its ceiling of %d machines",
@@ -165,12 +175,14 @@ func (c *Controller) reconcilePool(ctx context.Context, pool *store.Pool) error 
 		"idle", plan.idle, "launching", len(plan.forJobs), "warm", plan.warm)
 
 	for _, j := range plan.forJobs {
+		metrics.Launch(pool.Name, "job")
 		if err := c.launch(ctx, pool, prov, fg, j.ID); err != nil {
 			c.db.Logf(ctx, "error", "launch", &pool.ID, nil, "launch failed: %v", err)
 			return err
 		}
 	}
 	for range plan.warm {
+		metrics.Launch(pool.Name, "warm")
 		if err := c.launch(ctx, pool, prov, fg, ""); err != nil {
 			c.db.Logf(ctx, "error", "launch", &pool.ID, nil, "warm launch failed: %v", err)
 			return err
@@ -314,7 +326,12 @@ func (c *Controller) launch(ctx context.Context, pool *store.Pool, prov cloud.Pr
 		return fmt.Errorf("record instance: %w", err)
 	}
 
-	fail := func(err error) error {
+	// The stage is the label; the error text is not. A stage is a bounded set
+	// an alert can be written against, where provider error strings are
+	// unbounded and would multiply the series count by every distinct message
+	// a cloud ever returns. The message itself goes to the event log.
+	fail := func(stage string, err error) error {
+		metrics.MachineFailed(pool.Name, poolCloudName(pool), stage)
 		inst.Error = err.Error()
 		_ = c.db.SetState(ctx, inst, store.StateFailed)
 		c.db.Logf(ctx, "error", "launch", &pool.ID, &inst.ID, "%v", err)
@@ -323,11 +340,11 @@ func (c *Controller) launch(ctx context.Context, pool *store.Pool, prov cloud.Pr
 
 	cred, err := fg.Provision(ctx, forge.RunnerRequest{Name: name, Labels: pool.Labels, JobID: jobID})
 	if err != nil {
-		return fail(fmt.Errorf("mint runner credential: %w", err))
+		return fail("credential", fmt.Errorf("mint runner credential: %w", err))
 	}
 	inst.ForgeRunnerID = cred.RunnerID
 	if err := c.db.SetState(ctx, inst, store.StateProvisioning); err != nil {
-		return fail(err)
+		return fail("record", err)
 	}
 
 	caps := prov.Capabilities()
@@ -340,7 +357,7 @@ func (c *Controller) launch(ctx context.Context, pool *store.Pool, prov cloud.Pr
 		Network:        cloud.SpecString(specOf(pool.Size), "network"),
 	})
 	if err != nil {
-		return fail(fmt.Errorf("build bootstrap: %w", err))
+		return fail("bootstrap", fmt.Errorf("build bootstrap: %w", err))
 	}
 
 	req := cloud.ProvisionRequest{
@@ -365,16 +382,26 @@ func (c *Controller) launch(ctx context.Context, pool *store.Pool, prov cloud.Pr
 			c.log.Warn("could not roll back runner registration",
 				"runner", cred.RunnerID, "err", derr)
 		}
-		return fail(fmt.Errorf("provision machine: %w", err))
+		return fail("provision", fmt.Errorf("provision machine: %w", err))
 	}
 
 	inst.ProviderID = created.ID
 	if err := c.db.SetState(ctx, inst, store.StateBooting); err != nil {
-		return fail(err)
+		return fail("record", err)
 	}
+	metrics.MachineCreated(pool.Name, poolCloudName(pool))
 	c.db.Logf(ctx, "info", "launch", &pool.ID, &inst.ID,
 		"created %s on %s (%s)", name, pool.Cloud.Name, sizeName(pool))
 	return nil
+}
+
+// poolCloudName is the cloud a pool runs on, for labelling. A pool with no
+// cloud cannot launch anything, but the label still has to have a value.
+func poolCloudName(p *store.Pool) string {
+	if p.Cloud != nil {
+		return p.Cloud.Name
+	}
+	return ""
 }
 
 // hourlyRate is what one machine in this pool costs per hour, or zero when the

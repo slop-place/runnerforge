@@ -9,6 +9,7 @@ import (
 
 	"github.com/slop-place/runnerforge/internal/cloud"
 	"github.com/slop-place/runnerforge/internal/forge"
+	"github.com/slop-place/runnerforge/internal/metrics"
 	"github.com/slop-place/runnerforge/internal/store"
 )
 
@@ -71,13 +72,13 @@ func (c *Controller) advance(
 	if age := time.Since(inst.CreatedAt); age > pool.MaxLifetime() {
 		c.db.Logf(ctx, "warn", "reap", &pool.ID, &inst.ID,
 			"destroying %s: exceeded max lifetime (%s old)", inst.Name, age.Round(time.Second))
-		return c.destroy(ctx, prov, fg, inst)
+		return c.destroy(ctx, pool, prov, fg, inst, "max_lifetime")
 	}
 
 	// A machine that failed before the cloud create call has nothing to poll.
 	if inst.ProviderID == "" {
 		if inst.State == store.StateFailed {
-			return c.destroy(ctx, prov, fg, inst)
+			return c.destroy(ctx, pool, prov, fg, inst, "failed")
 		}
 		return nil
 	}
@@ -89,7 +90,7 @@ func (c *Controller) advance(
 		// the forge a cleanup for the registration it was carrying.
 		c.db.Logf(ctx, "info", "lifecycle", &pool.ID, &inst.ID,
 			"%s no longer exists at the provider", inst.Name)
-		return c.destroy(ctx, prov, fg, inst)
+		return c.destroy(ctx, pool, prov, fg, inst, "vanished")
 	case err != nil:
 		return fmt.Errorf("get instance %s: %w", inst.Name, err)
 	}
@@ -114,7 +115,7 @@ func (c *Controller) advance(
 		c.captureLogs(ctx, prov, inst)
 		c.db.Logf(ctx, "error", "lifecycle", &pool.ID, &inst.ID,
 			"%s failed at the provider: %s", inst.Name, got.Err)
-		return c.destroy(ctx, prov, fg, inst)
+		return c.destroy(ctx, pool, prov, fg, inst, "provider_error")
 
 	case cloud.StateStopped:
 		// A stopped machine has finished its job and powered itself off, which
@@ -130,7 +131,11 @@ func (c *Controller) advance(
 		if present, trustworthy := snap.has(inst.ForgeRunnerID); trustworthy && !present {
 			claimed = true
 		}
+		// A machine that stopped without ever taking work is the failure mode
+		// worth alerting on: the pool looks busy and produces nothing.
+		reason := "job_finished"
 		if !claimed {
+			reason = "stopped_unclaimed"
 			c.db.Logf(ctx, "warn", "lifecycle", &pool.ID, &inst.ID,
 				"%s stopped without ever claiming a job; output: %s",
 				inst.Name, firstLines(inst.Logs, eventLogLines))
@@ -138,13 +143,13 @@ func (c *Controller) advance(
 			c.db.Logf(ctx, "info", "lifecycle", &pool.ID, &inst.ID,
 				"%s stopped; tearing down", inst.Name)
 		}
-		return c.destroy(ctx, prov, fg, inst)
+		return c.destroy(ctx, pool, prov, fg, inst, reason)
 
 	case cloud.StateRunning, cloud.StateCreating:
 		return c.advanceRunning(ctx, pool, prov, fg, snap, inst)
 	case cloud.StateGone:
 		// Reported gone rather than absent; same obligation either way.
-		return c.destroy(ctx, prov, fg, inst)
+		return c.destroy(ctx, pool, prov, fg, inst, "vanished")
 	}
 	return nil
 }
@@ -181,7 +186,7 @@ func (c *Controller) advanceRunning(
 		}
 		c.db.Logf(ctx, "info", "lifecycle", &pool.ID, &inst.ID,
 			"%s finished its job; tearing down", inst.Name)
-		return c.destroy(ctx, prov, fg, inst)
+		return c.destroy(ctx, pool, prov, fg, inst, "job_finished")
 	}
 
 	r := snap.byID[inst.ForgeRunnerID]
@@ -192,6 +197,42 @@ func (c *Controller) advanceRunning(
 		return c.db.SetState(ctx, inst, store.StateIdle)
 	}
 	return c.db.WithContext(ctx).Save(inst).Error
+}
+
+// recordTeardown reports one machine's life as it ends.
+//
+// The spans come from the row's own timestamps, which is why they are read here
+// rather than timed with a stopwatch: the controller can restart mid-life, and
+// a machine created by a previous process still has an honest history.
+//
+// The pool is passed in rather than read off the instance. An instance carries
+// its pool but not that pool's cloud, so reading the labels from the row would
+// attribute every teardown to an empty cloud — a real number under a blank
+// name, which reads as plausible and answers nothing.
+func (c *Controller) recordTeardown(p *store.Pool, inst *store.Instance, reason string) {
+	pool, cl := "", ""
+	if p != nil {
+		pool = p.Name
+		cl = poolCloudName(p)
+	}
+	metrics.MachineTiming(pool, cl,
+		span(&inst.CreatedAt, inst.ActiveAt),
+		span(&inst.CreatedAt, inst.ReadyAt),
+		span(inst.ClaimedAt, inst.FinishedAt),
+		time.Since(inst.CreatedAt).Seconds(),
+	)
+	metrics.MachineDestroyed(pool, cl, reason,
+		float64(inst.BilledSeconds), inst.CostUSD)
+}
+
+// span is the seconds between two timestamps, or -1 when either never
+// happened. A machine that never came up has no boot time, and recording a
+// zero for it would drag every percentile down.
+func span(from, to *time.Time) float64 {
+	if from == nil || to == nil || to.Before(*from) {
+		return -1
+	}
+	return to.Sub(*from).Seconds()
 }
 
 // maxStoredLogs bounds what is kept per instance so a chatty runner cannot
@@ -243,7 +284,10 @@ func firstLines(s string, n int) string {
 // registration is tidied afterwards and its failure does not block the row from
 // being closed out, since a stale registration is harmless where a stray machine
 // is not.
-func (c *Controller) destroy(ctx context.Context, prov cloud.Provider, fg forge.Forge, inst *store.Instance) error {
+func (c *Controller) destroy(
+	ctx context.Context, pool *store.Pool, prov cloud.Provider, fg forge.Forge,
+	inst *store.Instance, reason string,
+) error {
 	if inst.State != store.StateDraining && inst.State != store.StateDeleted {
 		if err := c.db.SetState(ctx, inst, store.StateDraining); err != nil {
 			return err
@@ -271,6 +315,7 @@ func (c *Controller) destroy(ctx context.Context, prov cloud.Provider, fg forge.
 	// Settle before the row is closed out: this is the last point at which the
 	// machine's lifetime is known.
 	inst.Settle()
+	c.recordTeardown(pool, inst, reason)
 	if inst.CostUSD > 0 {
 		c.db.Logf(ctx, "info", "cost", &inst.PoolID, &inst.ID,
 			"%s ran for %s and cost $%.4f",

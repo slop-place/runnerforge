@@ -28,6 +28,7 @@ import (
 	"github.com/slop-place/runnerforge/internal/controller"
 	"github.com/slop-place/runnerforge/internal/forge"
 	"github.com/slop-place/runnerforge/internal/k8s"
+	"github.com/slop-place/runnerforge/internal/metrics"
 	"github.com/slop-place/runnerforge/internal/store"
 )
 
@@ -54,6 +55,12 @@ func New(
 ) *Server {
 	s := &Server{db: db, ctrl: ctrl, cfg: cfg, log: log, auth: authn}
 	s.tpl = mustParse()
+	// The collector that reads live state and the endpoint that publishes it
+	// are registered together, so that anything building a server gets both.
+	// Splitting them is how a deployment ends up serving counters and no
+	// gauges, which looks like a working scrape and answers nothing about the
+	// fleet.
+	metrics.NewStateCollector(db, log)
 	return s
 }
 
@@ -231,7 +238,25 @@ func (s *Server) Handler() http.Handler {
 	})
 
 	s.auth.Routes(mux)
-	return s.auth.Middleware(mux)
+
+	handler := s.auth.Middleware(mux)
+
+	// The scrape endpoint sits outside the sign-in gate rather than inside it.
+	// Prometheus cannot complete an authorization code flow, so a metrics path
+	// behind OIDC is a metrics path nothing can read; it has a bearer token of
+	// its own instead. Registering it on a mux in front of the gated one keeps
+	// that fact in one place, rather than as another exception the auth
+	// package has to know about.
+	if h := metrics.Handler(s.cfg.Metrics, s.cfg.APITokens); h != nil {
+		outer := http.NewServeMux()
+		outer.Handle("GET "+s.cfg.Metrics.Route(), h)
+		outer.Handle("/", handler)
+		handler = outer
+	}
+
+	// Timing wraps sign-in too, so a provider that has gone slow shows up as
+	// slow requests rather than as an unexplained drop in traffic.
+	return metrics.Middleware(handler)
 }
 
 // view is the data every page template receives.
@@ -332,7 +357,9 @@ func (s *Server) renderFragment(w http.ResponseWriter, name string, data any) {
 // to swap the response into the page. Answering one of those with a redirect
 // to a whole page puts a whole page inside whatever element was targeted.
 func htmxRequest(r *http.Request) bool {
-	return r.Header.Get("HX-Request") == headerTrue
+	// Spelled the way Go canonicalises it; htmx sends HX-Request and Get
+	// matches either.
+	return r.Header.Get("Hx-Request") == headerTrue
 }
 
 // fail redirects back with an error message. Configuration mistakes are the
