@@ -18,7 +18,7 @@ not rendered — Terraform gets a variable and Kubernetes gets a
   {{end}}
 </div>
 
-<pre class="logs code">{{.Export}}</pre>
+<pre class="logs code"><code>{{highlight .ExportFormat .Export}}</code></pre>
 
 {{if eq .ExportFormat "hcl"}}
 <h2>Using it</h2>

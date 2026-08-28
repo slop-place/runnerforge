@@ -243,6 +243,7 @@ button:active, .ghost:active { transform: translate(3px, 3px); box-shadow: none;
 .ghost { background: var(--panel); color: var(--ink); }
 .ghost.on { background: var(--ink); color: var(--bg); }
 .logs.code { max-height: 34rem; overflow: auto; }
+.logs.code code { font: inherit; color: inherit; }
 
 .ghost.danger:hover { background: var(--alarm); color: #fff; border-color: var(--alarm); }
 form.inline { display: inline; }
@@ -319,6 +320,30 @@ textarea { resize: vertical; line-height: 1.4; }
 }
 .kv dd { margin: 0; font-size: 0.88rem; }
 .kv dd:empty::after { content: "—"; color: var(--ink-soft); }
+
+/* ── syntax highlighting ─────────────────────────────────────────────────
+   Four roles, not a rainbow: what it is, what it is called, what the value is,
+   and what is only a comment. The accent is the slop green already on the
+   page, so a code block reads as part of the console rather than a foreign
+   embedded editor. */
+
+.t-kw      { color: var(--slop-ink); font-weight: 600; }
+.t-attr    { color: var(--ink); font-weight: 600; }
+.t-str     { color: var(--slop-ink); }
+.t-num     { color: var(--slop-ink); }
+.t-ref     { color: var(--ink); text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 2px; }
+.t-comment { color: var(--ink-soft); font-style: italic; }
+.t-punct   { color: var(--ink-soft); }
+
+@media (prefers-color-scheme: dark) {
+  /* On the dark ground the slop green is the readable accent; ink-on-ink is
+     not, so the roles that used it move to the highlight. */
+  .t-kw   { color: var(--slop); }
+  .t-str  { color: var(--slop); }
+  .t-num  { color: var(--slop); }
+  .t-attr { color: var(--ink); }
+  .t-ref  { color: var(--ink); }
+}
 
 .logs {
   padding: 0.85rem 1rem;

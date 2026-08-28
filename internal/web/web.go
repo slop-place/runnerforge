@@ -118,6 +118,9 @@ var funcs = template.FuncMap{
 	// specsummary renders a driver spec as readable key=value pairs. The raw
 	// JSON was accurate and unreadable; this is what an operator scans a table
 	// for.
+	// highlight colours a rendered configuration. It escapes everything it
+	// emits, which is why it can return HTML.
+	"highlight": highlight,
 	"specsummary": func(p store.Params) string {
 		if len(p) == 0 {
 			return "—"
