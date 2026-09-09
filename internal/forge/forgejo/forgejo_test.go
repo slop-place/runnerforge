@@ -173,7 +173,7 @@ func TestBootstrapCloudInit(t *testing.T) {
 		t.Error("cloud-init must skip the download when the image already ships the runner")
 	}
 	// The install line lives inside a YAML double-quoted scalar.
-	for _, line := range strings.Split(ci, "\n") {
+	for line := range strings.SplitSeq(ci, "\n") {
 		if strings.Contains(line, "forgejo-runner-") && strings.Count(line, "\"") != 2 {
 			t.Errorf("install line breaks YAML quoting: %s", line)
 		}
