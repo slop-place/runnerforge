@@ -66,6 +66,13 @@ func init() {
 					"task is available at the instant they start.",
 			},
 			{
+				Key: "runner_version", Label: "Runner version", Type: cloud.FieldText,
+				Placeholder: DefaultRunnerVersion,
+				Help: "Installed by cloud-init on VM images that do not already ship " +
+					"forgejo-runner. Ignored by container-mode clouds, which use the " +
+					"runner image instead.",
+			},
+			{
 				Key: "token", Label: "API token", Type: cloud.FieldPassword,
 				Required: true, Secret: true,
 				Help: "Needs permission to manage runners in the chosen scope.",
@@ -89,6 +96,9 @@ type Forgejo struct {
 	// runnerImage is the container image used when the cloud provider runs
 	// runners as containers rather than VMs.
 	runnerImage string
+	// runnerVersion is the release cloud-init installs on a VM whose image
+	// does not already carry forgejo-runner.
+	runnerVersion string
 }
 
 // New builds a Forgejo connection. Recognised settings:
@@ -100,6 +110,7 @@ type Forgejo struct {
 //	repo         repository name, for repo scope
 //	token        API token with permission to manage runners (required)
 //	runner_image container image for container-mode clouds
+//	runner_version forgejo-runner release cloud-init installs on VM images without one
 func New(cfg map[string]any) (forge.Forge, error) {
 	get := func(k string) string { s, _ := cfg[k].(string); return strings.TrimSpace(s) }
 
@@ -125,17 +136,22 @@ func New(cfg map[string]any) (forge.Forge, error) {
 	if img == "" {
 		img = DefaultRunnerImage
 	}
+	ver := strings.TrimPrefix(get("runner_version"), "v")
+	if ver == "" {
+		ver = DefaultRunnerVersion
+	}
 
 	h := http.Header{}
 	h.Set("Authorization", "token "+token)
 
 	return &Forgejo{
-		name:        get("name"),
-		url:         base,
-		apiURL:      apiBase,
-		scope:       scope,
-		client:      forge.NewClient(apiBase+"/api/v1", h),
-		runnerImage: img,
+		name:          get("name"),
+		url:           base,
+		apiURL:        apiBase,
+		scope:         scope,
+		client:        forge.NewClient(apiBase+"/api/v1", h),
+		runnerImage:   img,
+		runnerVersion: ver,
 	}, nil
 }
 
@@ -146,6 +162,15 @@ func New(cfg map[string]any) (forge.Forge, error) {
 // runner 12. Older runners exit immediately when no task is available at the
 // instant they start, which turns every launch into a race.
 const DefaultRunnerImage = "code.forgejo.org/forgejo/runner:12"
+
+// DefaultRunnerVersion is the forgejo-runner release cloud-init installs when a
+// VM image does not already carry the binary. Same major as DefaultRunnerImage,
+// for the same reason: `one-job --wait --handle` arrived in 12.
+const DefaultRunnerVersion = "12.13.2"
+
+// runnerReleaseURL is where the runner binaries are published; the release
+// tag, the version and the architecture are filled in per machine.
+const runnerReleaseURL = "https://code.forgejo.org/forgejo/runner/releases/download"
 
 // The scopes a connection can target, as the API paths name them.
 const (
@@ -446,7 +471,22 @@ func (f *Forgejo) cloudInit(runnerFileJSON []byte, opts forge.BootstrapOptions) 
 	// Hard ceiling independent of anything the job does.
 	fmt.Fprintf(&b, "  - [ sh, -c, \"shutdown -h +%d\" ]\n", int(timeout.Minutes())+shutdownGraceMinutes)
 	b.WriteString("  - [ sh, -c, \"command -v docker >/dev/null 2>&1 || (curl -fsSL https://get.docker.com | sh)\" ]\n")
+	// A golden image ships the runner; a stock distribution image does not.
+	// Installing it here is what lets a pool run on an image straight from the
+	// provider's catalogue, at the cost of one download per machine.
+	fmt.Fprintf(&b, "  - [ sh, -c, \"%s\" ]\n", f.installRunner())
 	fmt.Fprintf(&b, "  - [ sh, -c, \"cd /opt/runnerforge && timeout %d forgejo-runner one-job %s; poweroff\" ]\n",
 		int(timeout.Seconds()), strings.Join(oneJobArgs(opts), " "))
 	return []byte(b.String())
+}
+
+// installRunner is the shell that puts forgejo-runner on PATH when the image
+// has none. It runs under sh -c inside a YAML double-quoted scalar, so it must
+// stay free of double quotes and backslashes.
+func (f *Forgejo) installRunner() string {
+	return "command -v forgejo-runner >/dev/null 2>&1 || (" +
+		"arch=$(uname -m); case $arch in x86_64) arch=amd64;; aarch64) arch=arm64;; esac; " +
+		"curl -fsSL -o /usr/local/bin/forgejo-runner " + runnerReleaseURL +
+		"/v" + f.runnerVersion + "/forgejo-runner-" + f.runnerVersion + "-linux-$arch" +
+		" && chmod 0755 /usr/local/bin/forgejo-runner)"
 }

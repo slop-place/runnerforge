@@ -17,9 +17,13 @@ jobs:
         with:
           go-version: '1.27'
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
           version: latest
+          # The prebuilt binary is compiled with an older Go than go.mod asks
+          # for, and golangci-lint refuses to run in that case. Building it
+          # with the toolchain setup-go just installed avoids the mismatch.
+          install-mode: goinstall
           args: --timeout=5m
 
   test:

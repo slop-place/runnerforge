@@ -11,7 +11,7 @@ import (
 
 	"github.com/slop-place/runnerforge/internal/cloud"
 	"github.com/slop-place/runnerforge/internal/forge"
-	_ "github.com/slop-place/runnerforge/internal/forge/forgejo"
+	"github.com/slop-place/runnerforge/internal/forge/forgejo"
 )
 
 func newForge(t *testing.T, cfg map[string]any) forge.Forge {
@@ -161,6 +161,37 @@ func TestBootstrapCloudInit(t *testing.T) {
 	}
 	if !strings.Contains(ci, "ssh-ed25519 AAAA") {
 		t.Error("the SSH key was not installed")
+	}
+	// A stock image has no runner; cloud-init must be able to fetch one, and
+	// must fetch the release the connection was configured with.
+	v := forgejo.DefaultRunnerVersion
+	want := "https://code.forgejo.org/forgejo/runner/releases/download/v" + v + "/forgejo-runner-" + v + "-linux-"
+	if !strings.Contains(ci, want) {
+		t.Errorf("cloud-init does not install forgejo-runner; want %q in:\n%s", want, ci)
+	}
+	if !strings.Contains(ci, "command -v forgejo-runner") {
+		t.Error("cloud-init must skip the download when the image already ships the runner")
+	}
+	// The install line lives inside a YAML double-quoted scalar.
+	for _, line := range strings.Split(ci, "\n") {
+		if strings.Contains(line, "forgejo-runner-") && strings.Count(line, "\"") != 2 {
+			t.Errorf("install line breaks YAML quoting: %s", line)
+		}
+	}
+}
+
+func TestBootstrapCloudInitPinsRunnerVersion(t *testing.T) {
+	f := newForge(t, map[string]any{"runner_version": "v13.1.0"})
+	b, err := f.Bootstrap(
+		&forge.Credential{UUID: "u", Token: "t"},
+		cloud.CredentialCloudInit,
+		forge.BootstrapOptions{RunnerName: "rf-a", Labels: []string{"linux"}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b.CloudInit), "/v13.1.0/forgejo-runner-13.1.0-linux-") {
+		t.Errorf("runner_version was not honoured:\n%s", b.CloudInit)
 	}
 }
 
