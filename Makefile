@@ -18,13 +18,15 @@ test-unit:
 test: test-unit
 
 ## e2e-up starts the local forges the end-to-end tests run against.
-## Use: eval "$$(make -s e2e-up)"     (add RF_WITH_GITLAB=1 for GitLab)
+## Use: eval "$$(make -s e2e-up)"
+## (add RF_WITH_GITLAB=1 for GitLab, RF_WITH_K8S=1 for a kind cluster)
 e2e-up:
 	@testdata/e2e-up.sh
 
 e2e-down:
 	-docker rm -f rf-forgejo rf-gitlab 2>/dev/null
 	-docker network rm rf-net 2>/dev/null
+	-kind delete cluster --name rf-k8s 2>/dev/null
 
 lint:
 	$(LINT) run ./...

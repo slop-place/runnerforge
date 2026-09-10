@@ -667,3 +667,35 @@ func TestPoolCreationRefusesIncompleteInput(t *testing.T) {
 		t.Error("a pool with no forge, cloud or size should be refused")
 	}
 }
+
+// A pool that has run a job keeps the rows of its finished machines. Deleting
+// it must still work: the rows go with it rather than blocking it forever.
+func TestPoolDeletionAfterMachinesFinished(t *testing.T) {
+	db, h := newServer(t)
+	post(t, h, "/clouds", url.Values{"name": {"c"}, "driver": {"docker"}})
+	post(t, h, "/clouds/1/sizes", url.Values{"name": {"s"}})
+	post(t, h, "/forges", url.Values{
+		"name": {"f"}, "kind": {"forgejo"}, "f_url": {"http://f"},
+		"f_scope": {"repo"}, "f_owner": {"o"}, "f_repo": {"r"}, "f_token": {"t"},
+	})
+	post(t, h, "/pools", url.Values{
+		"name": {"p"}, "forge_id": {"1"}, "cloud_id": {"1"}, "size_id": {"1"},
+		"labels": {"linux"}, "max_instances": {"3"},
+		"job_timeout_sec": {"600"}, "max_lifetime_sec": {"1200"},
+	})
+	if err := db.Create(&store.Instance{
+		Name: "rf-finished", PoolID: 1, State: store.StateDeleted,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	rec := get(t, h, "/pools/1/delete")
+	if loc := rec.Header().Get("Location"); strings.Contains(loc, "err=") {
+		t.Errorf("deleting a pool whose machines have all finished was refused: %s", loc)
+	}
+	var n int64
+	db.Model(&store.Pool{}).Count(&n)
+	if n != 0 {
+		t.Error("pool row survived")
+	}
+}

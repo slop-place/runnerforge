@@ -70,6 +70,46 @@ jobs:
             exit 1
           fi
 
+  e2e-kubernetes:
+    # The reconciler against a real API server: CRDs installed from the
+    # working tree, objects created the way kubectl would, statuses read back.
+    # The last test then runs a real job through configuration that came from
+    # the cluster rather than the database, on the same Forgejo and Docker
+    # daemon as e2e-forgejo.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: rf-k8s
+      - name: Start Forgejo
+        run: |
+          eval "$(testdata/e2e-up.sh)"
+          {
+            echo "RF_TEST_FORGEJO_API=$RF_TEST_FORGEJO_API"
+            echo "RF_TEST_FORGEJO_INTERNAL=$RF_TEST_FORGEJO_INTERNAL"
+            echo "RF_TEST_FORGEJO_TOKEN=$RF_TEST_FORGEJO_TOKEN"
+            echo "RF_TEST_FORGEJO_OWNER=$RF_TEST_FORGEJO_OWNER"
+            echo "RF_TEST_FORGEJO_REPO=$RF_TEST_FORGEJO_REPO"
+            echo "RF_TEST_DOCKER_NETWORK=$RF_TEST_DOCKER_NETWORK"
+            echo "RF_TEST_KUBECONFIG=$HOME/.kube/config"
+          } >> "$GITHUB_ENV"
+      - name: Reconciler against the API server
+        run: go test -count=1 -timeout 10m -run TestKubernetes -v ./internal/k8s/
+      - name: End-to-end from cluster objects
+        run: go test -count=1 -timeout 10m -run TestKubernetesEndToEnd -v ./internal/controller/
+      - name: Assert nothing leaked
+        run: |
+          left=$(docker ps -aq --filter "label=runnerforge-controller" | wc -l)
+          if [ "$left" -ne 0 ]; then
+            echo "::error::$left runner container(s) survived the test run"
+            docker ps -a --filter "label=runnerforge-controller"
+            exit 1
+          fi
+
   build:
     runs-on: ubuntu-latest
     steps:

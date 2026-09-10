@@ -222,13 +222,11 @@ func (s *Server) apiGetPool(w http.ResponseWriter, r *http.Request) {
 func (s *Server) apiDeletePool(w http.ResponseWriter, r *http.Request) {
 	// A pool with machines still running must not vanish: the reaper finds
 	// them by the pool name written on them.
-	live, err := s.db.LiveInstances(r.Context(), pathID(r))
-	if err == nil && len(live) > 0 {
-		writeJSONError(w, http.StatusConflict,
-			"machines are still running in this pool; wait for them or destroy them first")
-		return
-	}
-	if err := s.db.WithContext(r.Context()).Delete(&store.Pool{}, pathID(r)).Error; err != nil {
+	if err := s.db.DeletePool(r.Context(), pathID(r)); err != nil {
+		if errors.Is(err, store.ErrPoolBusy) {
+			writeJSONError(w, http.StatusConflict, err.Error())
+			return
+		}
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

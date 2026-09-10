@@ -488,16 +488,18 @@ func (r *Reconciler) pruneDeleted(ctx context.Context) error {
 		if !r.managesPool(ctx, p) {
 			continue
 		}
-		live, _ := r.db.LiveInstances(ctx, p.ID)
-		if len(live) > 0 {
-			// Deleting it would strand the machines, which the reaper finds by
-			// the pool name written on them.
+		// Deleting it while machines run would strand them, since the reaper
+		// finds them by the pool name written on them; the store refuses.
+		err := r.db.DeletePool(ctx, p.ID)
+		switch {
+		case errors.Is(err, store.ErrPoolBusy):
 			r.log.Warn("pool removed from the cluster still has machines running; "+
-				"leaving it until they finish", "pool", p.Name, "machines", len(live))
-			continue
+				"leaving it until they finish", "pool", p.Name, "err", err)
+		case err != nil:
+			r.log.Error("could not remove a pool deleted from the cluster", "pool", p.Name, "err", err)
+		default:
+			r.log.Info("removed a pool deleted from the cluster", "pool", p.Name)
 		}
-		r.log.Info("removing a pool deleted from the cluster", "pool", p.Name)
-		r.db.WithContext(ctx).Delete(&store.Pool{}, p.ID)
 	}
 
 	r.pruneManaged(ctx, &store.Forge{}, forges, "forge_id")

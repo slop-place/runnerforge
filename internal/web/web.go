@@ -887,16 +887,9 @@ func (s *Server) updatePool(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deletePool(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	id := pathID(r)
 	// Machines outlive the pool row unless they are dealt with first, and the
-	// reaper identifies them by pool name, so tear them down before deleting.
-	live, err := s.db.LiveInstances(ctx, id)
-	if err == nil && len(live) > 0 {
-		s.fail(w, r, "/pools", fmt.Errorf(
-			"%d machine(s) are still running in this pool; wait for them or destroy them first", len(live)))
-		return
-	}
-	if err := s.db.WithContext(ctx).Delete(&store.Pool{}, id).Error; err != nil {
+	// reaper identifies them by pool name, so the store refuses while any run.
+	if err := s.db.DeletePool(ctx, pathID(r)); err != nil {
 		s.fail(w, r, "/pools", err)
 		return
 	}

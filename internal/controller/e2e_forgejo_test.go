@@ -204,9 +204,9 @@ func dumpInstances(t *testing.T, db *store.DB) {
 	}
 }
 
-// newTestController builds a controller wired to the local Docker daemon and
-// the local Forgejo instance.
-func newTestController(t *testing.T, env map[string]string, label string) (*store.DB, *controller.Controller) {
+// newTestStore opens an empty database under a fresh config, the state a
+// deployment starts from.
+func newTestStore(t *testing.T) (*store.DB, *config.Config) {
 	t.Helper()
 
 	key, err := config.GenerateSecretKey()
@@ -232,6 +232,14 @@ func newTestController(t *testing.T, env map[string]string, label string) (*stor
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
+	return db, cfg
+}
+
+// newTestController builds a controller wired to the local Docker daemon and
+// the local Forgejo instance.
+func newTestController(t *testing.T, env map[string]string, label string) (*store.DB, *controller.Controller) {
+	t.Helper()
+	db, cfg := newTestStore(t)
 
 	cl := &store.Cloud{
 		Name: "local-docker", Driver: "docker", Enabled: true,
@@ -289,8 +297,11 @@ func newTestController(t *testing.T, env map[string]string, label string) (*stor
 		t.Fatal(err)
 	}
 
-	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	return db, controller.New(db, cfg, log)
+	return db, controller.New(db, cfg, testLogger())
+}
+
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 }
 
 func requireEnv(t *testing.T, keys ...string) map[string]string {

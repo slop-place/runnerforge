@@ -57,7 +57,7 @@ the per-forge gotchas that shaped it.
 | OIDC sign-in | working |
 | JSON API | working |
 | Terraform provider | working |
-| Kubernetes CRDs | working |
+| Kubernetes CRDs | working, verified end to end against a real cluster |
 | Prometheus metrics | working |
 | Hetzner, DigitalOcean, Kubernetes drivers | not started |
 | Webhook ingestion (push instead of polling) | not started |
@@ -82,6 +82,20 @@ repository:
 ```sh
 export RF_TEST_GITHUB_TOKEN=$(gh auth token)
 export RF_TEST_GITHUB_OWNER=your-org RF_TEST_GITHUB_REPO=your-scratch-repo
+```
+
+The Kubernetes reconciler is tested against a real API server, never a fake:
+the CRDs are installed from the working tree, Cloud/Forge/Pool objects and a
+Secret are created the way `kubectl apply` would, and the assertions read
+both the database and the status subresources back from the cluster. The last
+of those tests runs the Forgejo end-to-end job with every piece of
+configuration having come from the cluster, then deletes the Pool object and
+checks the record follows it.
+
+```sh
+RF_WITH_K8S=1 eval "$(testdata/e2e-up.sh)"      # adds a kind cluster
+go test ./internal/k8s/ -run TestKubernetes -v
+go test ./internal/controller/ -run TestKubernetesEndToEnd -v
 ```
 
 The web console has end-to-end tests of its own, driven through a real Chrome:

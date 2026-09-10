@@ -160,6 +160,37 @@ func (d *DB) LiveInstances(ctx context.Context, poolID uint) ([]Instance, error)
 	return out, err
 }
 
+// ErrPoolBusy is returned by DeletePool while machines are still running: the
+// reaper finds them by the pool name written on them, so the row has to
+// outlive them.
+var ErrPoolBusy = errors.New("machines are still running in this pool")
+
+// DeletePool removes a pool together with the rows of the machines it ran.
+//
+// The machine rows have to go with it: they reference the pool and the
+// database enforces that, so a pool that ever ran a job could otherwise never
+// be deleted. What is lost is that pool's line in the cost history; the event
+// log keeps its text. Refuses with ErrPoolBusy while any machine is live.
+func (d *DB) DeletePool(ctx context.Context, id uint) error {
+	live, err := d.LiveInstances(ctx, id)
+	if err != nil {
+		return err
+	}
+	if len(live) > 0 {
+		return fmt.Errorf("%w: %d machine(s); wait for them or destroy them first", ErrPoolBusy, len(live))
+	}
+	err = d.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("pool_id = ?", id).Delete(&Instance{}).Error; err != nil {
+			return fmt.Errorf("machines: %w", err)
+		}
+		return tx.Delete(&Pool{}, id).Error
+	})
+	if err != nil {
+		return fmt.Errorf("delete pool %d: %w", id, err)
+	}
+	return nil
+}
+
 // AllLiveInstances returns every non-deleted instance across all pools.
 func (d *DB) AllLiveInstances(ctx context.Context) ([]Instance, error) {
 	var out []Instance

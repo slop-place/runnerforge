@@ -11,6 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -215,7 +217,7 @@ func SpecString(spec map[string]any, key string) string {
 }
 
 // SpecInt reads a numeric field from a driver spec. JSON round-trips numbers as
-// float64, so both are accepted.
+// float64 and a Kubernetes object carries them as strings, so all are accepted.
 func SpecInt(spec map[string]any, key string) (int64, bool) {
 	if spec == nil {
 		return 0, false
@@ -227,11 +229,24 @@ func SpecInt(spec map[string]any, key string) (int64, bool) {
 		return v, true
 	case float64:
 		return int64(v), true
+	case string:
+		// A Kubernetes object carries every spec value as a string, so "2048"
+		// has to mean the same as 2048 entered in the UI.
+		n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		if err != nil {
+			f, ferr := strconv.ParseFloat(strings.TrimSpace(v), 64)
+			if ferr != nil {
+				return 0, false
+			}
+			return int64(f), true
+		}
+		return n, true
 	}
 	return 0, false
 }
 
-// SpecFloat reads a fractional field from a driver spec.
+// SpecFloat reads a numeric field from a driver spec, accepting the same
+// integer, float and string forms as SpecInt.
 func SpecFloat(spec map[string]any, key string) (float64, bool) {
 	if spec == nil {
 		return 0, false
@@ -243,17 +258,30 @@ func SpecFloat(spec map[string]any, key string) (float64, bool) {
 		return float64(v), true
 	case float64:
 		return v, true
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil {
+			return 0, false
+		}
+		return f, true
 	}
 	return 0, false
 }
 
-// SpecBool reads a boolean field from a driver spec.
+// SpecBool reads a boolean field from a driver spec. A Kubernetes object
+// carries it as "true"; the UI and the API as a bool.
 func SpecBool(spec map[string]any, key string) bool {
 	if spec == nil {
 		return false
 	}
-	b, _ := spec[key].(bool)
-	return b
+	switch v := spec[key].(type) {
+	case bool:
+		return v
+	case string:
+		b, err := strconv.ParseBool(strings.TrimSpace(v))
+		return err == nil && b
+	}
+	return false
 }
 
 // LogProvider is an optional Provider capability: retrieving a machine's console

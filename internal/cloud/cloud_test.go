@@ -99,7 +99,26 @@ func TestSpecHelpers(t *testing.T) {
 		t.Errorf("SpecInt(int) = %d, %v", n, ok)
 	}
 	if _, ok := cloud.SpecInt(spec, "flavor"); ok {
-		t.Error("SpecInt on a string should report not-ok")
+		t.Error("SpecInt on a non-numeric string should report not-ok")
+	}
+
+	// A Cloud object's size spec is a map of strings, so the same numbers
+	// arrive quoted from the Kubernetes reconciler.
+	quoted := map[string]any{"memory_mb": "4096", "cpus": " 2.5 ", "priv": "true", "off": "no"}
+	if n, ok := cloud.SpecInt(quoted, "memory_mb"); !ok || n != 4096 {
+		t.Errorf("SpecInt(string) = %d, %v", n, ok)
+	}
+	if n, ok := cloud.SpecInt(quoted, "cpus"); !ok || n != 2 {
+		t.Errorf("SpecInt(float string) = %d, %v", n, ok)
+	}
+	if f, ok := cloud.SpecFloat(quoted, "cpus"); !ok || f != 2.5 {
+		t.Errorf("SpecFloat(string) = %v, %v", f, ok)
+	}
+	if !cloud.SpecBool(quoted, "priv") {
+		t.Error("SpecBool(\"true\") should be true")
+	}
+	if cloud.SpecBool(quoted, "off") {
+		t.Error("SpecBool(\"no\") should be false")
 	}
 
 	if f, ok := cloud.SpecFloat(spec, "cpus"); !ok || f != 2.5 {

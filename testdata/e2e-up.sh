@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Stands up the local dependencies the end-to-end tests need: a Forgejo
-# instance, a GitLab instance, and a Docker network shared by the runners.
+# instance, a GitLab instance, a Docker network shared by the runners, and a
+# kind cluster for the Kubernetes reconciler.
 #
 # Everything here is real. The only thing the tests substitute is running
 # runners as containers rather than cloud VMs.
@@ -101,6 +102,23 @@ export RF_TEST_GITLAB_TOKEN=${GL_TOKEN}
 export RF_TEST_GITLAB_PROJECT=${GL_PID}"
 fi
 
+# ---- Kubernetes -----------------------------------------------------------
+# Optional: skipped unless RF_WITH_K8S=1. A kind cluster for the reconciler
+# tests; the reconciler runs in the test process and only needs to reach the
+# API server, so the cluster shares nothing with the Docker network above.
+K8S_ENV=""
+if [ "${RF_WITH_K8S:-0}" = "1" ]; then
+  KIND_NAME=${RF_KIND_NAME:-rf-k8s}
+  KUBECONFIG_PATH=${RF_KUBECONFIG:-${TMPDIR:-/tmp}/rf-kubeconfig}
+  if ! kind get clusters 2>/dev/null | grep -qx "$KIND_NAME"; then
+    log "creating kind cluster $KIND_NAME"
+    kind create cluster --name "$KIND_NAME" --kubeconfig "$KUBECONFIG_PATH" --wait 120s >&2
+  else
+    kind export kubeconfig --name "$KIND_NAME" --kubeconfig "$KUBECONFIG_PATH" >&2
+  fi
+  K8S_ENV="export RF_TEST_KUBECONFIG=${KUBECONFIG_PATH}"
+fi
+
 log "ready"
 cat <<ENV
 export RF_TEST_FORGEJO_API=http://localhost:${PORT}
@@ -110,4 +128,5 @@ export RF_TEST_FORGEJO_OWNER=${USER_NAME}
 export RF_TEST_FORGEJO_REPO=ci-test
 export RF_TEST_DOCKER_NETWORK=${NET}
 ${GL_ENV}
+${K8S_ENV}
 ENV

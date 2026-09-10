@@ -576,3 +576,73 @@ func TestSecretValueWithoutAKeyFails(t *testing.T) {
 		t.Error("a short key should be rejected")
 	}
 }
+
+func TestDeletePoolTakesItsMachineHistoryAlong(t *testing.T) {
+	t.Parallel()
+	db := newDB(t)
+	ctx := t.Context()
+
+	cl := &store.Cloud{Name: "c", Driver: "docker", Enabled: true, Settings: store.Params{}}
+	if err := db.Create(cl).Error; err != nil {
+		t.Fatal(err)
+	}
+	sz := &store.Size{CloudID: cl.ID, Name: "s"}
+	if err := db.Create(sz).Error; err != nil {
+		t.Fatal(err)
+	}
+	fg := &store.Forge{Name: "f", Kind: "forgejo", Enabled: true, Settings: store.Params{}}
+	if err := db.Create(fg).Error; err != nil {
+		t.Fatal(err)
+	}
+	newPool := func(name string) *store.Pool {
+		p := &store.Pool{Name: name, Enabled: true, ForgeID: fg.ID, CloudID: cl.ID, SizeID: sz.ID,
+			Labels: store.StringList{"x"}, MaxInstances: 1, JobTimeoutSec: 60, MaxLifetimeSec: 120}
+		if err := db.Create(p).Error; err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	p, other := newPool("p"), newPool("other")
+	for _, in := range []*store.Instance{
+		{Name: "rf-p-done", PoolID: p.ID, State: store.StateDeleted},
+		{Name: "rf-p-live", PoolID: p.ID, State: store.StateBusy},
+		{Name: "rf-other-done", PoolID: other.ID, State: store.StateDeleted},
+	} {
+		if err := db.Create(in).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// A running machine blocks the deletion, and nothing changes.
+	err := db.DeletePool(ctx, p.ID)
+	if !errors.Is(err, store.ErrPoolBusy) {
+		t.Fatalf("DeletePool with a live machine = %v, want ErrPoolBusy", err)
+	}
+	var n int64
+	db.Model(&store.Instance{}).Where("pool_id = ?", p.ID).Count(&n)
+	if n != 2 {
+		t.Errorf("%d instance rows after the refused delete, want 2", n)
+	}
+
+	// Once the machine is gone, the pool goes with its finished rows. The
+	// database enforces the reference, so this is the only order that works.
+	if err := db.Model(&store.Instance{}).Where("name = ?", "rf-p-live").
+		Update("state", store.StateDeleted).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.DeletePool(ctx, p.ID); err != nil {
+		t.Fatalf("DeletePool = %v", err)
+	}
+	db.Model(&store.Pool{}).Where("id = ?", p.ID).Count(&n)
+	if n != 0 {
+		t.Error("pool row survived")
+	}
+	db.Model(&store.Instance{}).Where("pool_id = ?", p.ID).Count(&n)
+	if n != 0 {
+		t.Errorf("%d instance rows survived their pool", n)
+	}
+	db.Model(&store.Instance{}).Where("pool_id = ?", other.ID).Count(&n)
+	if n != 1 {
+		t.Error("another pool's history was touched")
+	}
+}
