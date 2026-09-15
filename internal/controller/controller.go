@@ -154,7 +154,9 @@ func (c *Controller) reconcilePool(ctx context.Context, pool *store.Pool) error 
 		return err
 	}
 
-	jobs, err := fg.Demand(ctx, pool.Labels)
+	// The forge filters the queue by label, and a job asks for the bare name
+	// ("ovh-small"), never the image the pool pins to it.
+	jobs, err := fg.Demand(ctx, normalizeLabels(pool.Labels))
 	if err != nil {
 		return fmt.Errorf("demand: %w", err)
 	}
@@ -290,6 +292,15 @@ func matchingJobs(jobs []forge.Job, poolLabels []string) []forge.Job {
 		if ok {
 			out = append(out, j)
 		}
+	}
+	return out
+}
+
+// normalizeLabels applies normalizeLabel to every label of a pool.
+func normalizeLabels(labels []string) []string {
+	out := make([]string, 0, len(labels))
+	for _, l := range labels {
+		out = append(out, normalizeLabel(l))
 	}
 	return out
 }

@@ -3,6 +3,7 @@ package controller_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,6 +99,30 @@ func TestReconcileIgnoresJobsWithUnmatchedLabels(t *testing.T) {
 	}
 	if got := h.cloud.count(); got != 0 {
 		t.Errorf("launched %d machines for jobs this pool cannot serve", got)
+	}
+}
+
+// A pool written the way Forgejo wants it, `label:docker://image`, asks the
+// forge for jobs by the bare label: that is what a job's runs-on carries, and
+// the forge's queue filter matches it literally. This is the bug that left a
+// production job waiting forever with every pool reporting an empty queue.
+func TestReconcileQueriesDemandWithBareLabels(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	h.pool.Labels = store.StringList{"Linux:docker://ghcr.io/catthehacker/ubuntu:act-24.04", "gpu"}
+	if err := h.db.Save(h.pool).Error; err != nil {
+		t.Fatal(err)
+	}
+	h.forge.setJobs(forge.Job{ID: "j1", Labels: []string{"linux"}})
+
+	if err := h.ctrl.ReconcileAll(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := strings.Join(h.forge.lastDemandLabels(), ","); got != "linux,gpu" {
+		t.Errorf("forge was asked for labels %q, want the bare names", got)
+	}
+	if got := h.cloud.count(); got != 1 {
+		t.Errorf("launched %d machines, want 1 for the job the pinned label serves", got)
 	}
 }
 

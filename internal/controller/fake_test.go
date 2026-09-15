@@ -191,6 +191,7 @@ type fakeForge struct {
 	mu           sync.Mutex
 	runners      map[string]forge.Runner
 	jobs         []forge.Job
+	demandLabels []string // what the last Demand asked for
 	nextID       int
 	listErr      error
 	provisionErr error
@@ -200,9 +201,10 @@ type fakeForge struct {
 func (f *fakeForge) Name() string     { return "fake" }
 func (f *fakeForge) Kind() forge.Kind { return "fake" }
 
-func (f *fakeForge) Demand(_ context.Context, _ []string) ([]forge.Job, error) {
+func (f *fakeForge) Demand(_ context.Context, labels []string) ([]forge.Job, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.demandLabels = append([]string(nil), labels...)
 	return append([]forge.Job(nil), f.jobs...), nil
 }
 
@@ -262,4 +264,10 @@ func (f *fakeForge) setJobs(jobs ...forge.Job) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.jobs = jobs
+}
+
+func (f *fakeForge) lastDemandLabels() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.demandLabels...)
 }

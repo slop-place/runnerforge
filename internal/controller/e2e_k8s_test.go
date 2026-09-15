@@ -70,7 +70,9 @@ func TestKubernetesEndToEnd(t *testing.T) {
 	cluster.Create(t, ns, "pools", "e2e", map[string]any{
 		"forgeRef": "local-forgejo", "cloudRef": "local-docker",
 		"size": "small", "image": "runner",
-		"labels":             []any{label},
+		// Pinned to an image, the way a real pool is written: the job still
+		// asks for the bare label, and the forge is queried with it.
+		"labels":             []any{label + ":docker://node:20-bookworm"},
 		"maxInstances":       int64(2),
 		"jobTimeoutSeconds":  int64(240),
 		"maxLifetimeSeconds": int64(480),
