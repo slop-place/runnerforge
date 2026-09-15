@@ -24,7 +24,9 @@ import (
 
 	"github.com/gophercloud/gophercloud/v2"
 	gopenstack "github.com/gophercloud/gophercloud/v2/openstack"
+	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/flavors"
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/servers"
+	"github.com/gophercloud/gophercloud/v2/openstack/image/v2/images"
 	"github.com/gophercloud/gophercloud/v2/openstack/networking/v2/networks"
 
 	"github.com/slop-place/runnerforge/internal/cloud"
@@ -72,11 +74,14 @@ func init() {
 			},
 			Size: []cloud.Field{{
 				Key: "flavor", Label: "Flavor", Type: cloud.FieldSelect, Required: true,
-				Help: "The machine type. Loaded from the account once its credentials work.",
+				Help: "The machine type, by id or by name (b3-8). Loaded from the " +
+					"account once its credentials work.",
 			}},
 			Image: []cloud.Field{{
 				Key: "id", Label: "Image", Type: cloud.FieldSelect, Required: true,
-				Help: "Loaded from the account once its credentials work.",
+				Help: "By id or by name (Debian 12). A name survives the provider " +
+					"republishing the image under a new id. Loaded from the account " +
+					"once its credentials work.",
 			}},
 		},
 	})
@@ -118,10 +123,13 @@ type Driver struct {
 	// its public network "Ext-Net".
 	defaultNetwork string
 
-	// netIDs caches network name to uuid lookups. Nova will only accept a uuid,
-	// but operators think in names, so names are resolved once and reused.
-	netMu  sync.Mutex
-	netIDs map[string]string
+	// netIDs, flavorIDs and imageIDs cache name to id lookups. Nova only
+	// accepts ids, but operators think in names, so names are resolved once
+	// and reused.
+	netMu     sync.Mutex
+	netIDs    map[string]string
+	flavorIDs map[string]string
+	imageIDs  map[string]string
 }
 
 // New builds an OpenStack driver. Recognised settings:
@@ -196,6 +204,8 @@ func New(cfg map[string]any) (cloud.Provider, error) {
 		region:         get("region"),
 		defaultNetwork: network,
 		netIDs:         map[string]string{},
+		flavorIDs:      map[string]string{},
+		imageIDs:       map[string]string{},
 	}, nil
 }
 
@@ -230,6 +240,16 @@ func (d *Driver) Provision(ctx context.Context, req cloud.ProvisionRequest) (*cl
 	}
 	if image == "" {
 		return nil, fmt.Errorf("openstack: image %q has no id in its spec", req.Image)
+	}
+	// The UI stores ids; a manifest is written by hand and says "b3-8". Nova
+	// only takes ids, so names are looked up first.
+	flavor, err := d.flavorID(ctx, flavor)
+	if err != nil {
+		return nil, err
+	}
+	image, err = d.imageID(ctx, image)
+	if err != nil {
+		return nil, err
 	}
 
 	// Ownership metadata is what the reaper reads. It is set at creation so
@@ -470,6 +490,82 @@ func (d *Driver) networkID(ctx context.Context, name string) (string, error) {
 
 	d.netMu.Lock()
 	d.netIDs[name] = found[0].ID
+	d.netMu.Unlock()
+	return found[0].ID, nil
+}
+
+// flavorID resolves a flavor given by id or by name. Nova's flavor ids are
+// opaque (OVHcloud uses UUIDs, other clouds small integers), so anything that
+// is not found by name is also tried as an id before being reported missing.
+func (d *Driver) flavorID(ctx context.Context, ref string) (string, error) {
+	if looksLikeUUID(ref) {
+		return ref, nil
+	}
+	d.netMu.Lock()
+	if id, ok := d.flavorIDs[ref]; ok {
+		d.netMu.Unlock()
+		return id, nil
+	}
+	d.netMu.Unlock()
+
+	pages, err := flavors.ListDetail(d.compute, flavors.ListOpts{}).AllPages(ctx)
+	if err != nil {
+		return "", fmt.Errorf("openstack: look up flavor %q: %w", ref, err)
+	}
+	all, err := flavors.ExtractFlavors(pages)
+	if err != nil {
+		return "", fmt.Errorf("openstack: extract flavors: %w", err)
+	}
+	id := ""
+	for _, f := range all {
+		if f.Name == ref || f.ID == ref {
+			id = f.ID
+			break
+		}
+	}
+	if id == "" {
+		return "", fmt.Errorf("openstack: no flavor named %q in region %s", ref, d.region)
+	}
+
+	d.netMu.Lock()
+	d.flavorIDs[ref] = id
+	d.netMu.Unlock()
+	return id, nil
+}
+
+// imageID resolves an image given by id or by name. A name is what survives
+// the provider republishing the image under a new id, which OVHcloud does.
+// Glance is optional on this driver; without it only ids can be used.
+func (d *Driver) imageID(ctx context.Context, ref string) (string, error) {
+	if looksLikeUUID(ref) {
+		return ref, nil
+	}
+	d.netMu.Lock()
+	if id, ok := d.imageIDs[ref]; ok {
+		d.netMu.Unlock()
+		return id, nil
+	}
+	d.netMu.Unlock()
+
+	if d.image == nil {
+		return "", fmt.Errorf("openstack: image %q is not an id and %w", ref, errNoImageService)
+	}
+	pages, err := images.List(d.image, images.ListOpts{
+		Name: ref, Status: images.ImageStatusActive,
+	}).AllPages(ctx)
+	if err != nil {
+		return "", fmt.Errorf("openstack: look up image %q: %w", ref, err)
+	}
+	found, err := images.ExtractImages(pages)
+	if err != nil {
+		return "", fmt.Errorf("openstack: extract images: %w", err)
+	}
+	if len(found) == 0 {
+		return "", fmt.Errorf("openstack: no active image named %q in region %s", ref, d.region)
+	}
+
+	d.netMu.Lock()
+	d.imageIDs[ref] = found[0].ID
 	d.netMu.Unlock()
 	return found[0].ID, nil
 }

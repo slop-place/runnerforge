@@ -77,6 +77,7 @@ spec:
                   description: >-
                     What each size name means on this account. Pools ask for a
                     name, so large can be a c3-8 here and a cpx41 elsewhere.
+                    On OpenStack the spec is {flavor: b3-8}, by name or id.
                   items:
                     type: object
                     required: [name]
@@ -91,6 +92,9 @@ spec:
                       hourlyUSD: {type: number}
                 images:
                   type: array
+                  description: >-
+                    On OpenStack the spec is {id: ...}, by image id or by name;
+                    a name survives the provider republishing the image.
                   items:
                     type: object
                     required: [name]

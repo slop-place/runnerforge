@@ -27,6 +27,8 @@ type stubCloud struct {
 	mu       sync.Mutex
 	servers  map[string]map[string]any
 	networks []map[string]any
+	flavors  []map[string]any
+	images   []map[string]any
 	requests []string
 	console  string
 
@@ -40,6 +42,18 @@ func newStubCloud(t *testing.T) *stubCloud {
 		servers: map[string]map[string]any{},
 		networks: []map[string]any{
 			{"id": "3f2b1a44-9c7e-4d61-b8a3-0e5f6d7c8b9a", "name": "Ext-Net"},
+		},
+		flavors: []map[string]any{
+			{"id": "dc47c3a9-82b9-460f-80b4-475b5a550e9a", "name": "b3-8", "vcpus": 2, "ram": 8192, "disk": 50},
+			{"id": "3", "name": "m1.medium", "vcpus": 2, "ram": 4096, "disk": 40},
+			{"id": "flavor-id", "name": "opaque", "vcpus": 1, "ram": 1024, "disk": 10},
+			{"id": "f", "name": "f", "vcpus": 1, "ram": 1024, "disk": 10},
+		},
+		images: []map[string]any{
+			{"id": "22ef146b-0143-4d9b-9ca0-853e1c859990", "name": "Debian 12 - Docker", "status": "active"},
+			{"id": "0ffd87b6-bbff-436d-84ee-fff1c157452c", "name": "Debian 12 - Docker", "status": "deactivated"},
+			{"id": "image-id", "name": "image-id", "status": "active"},
+			{"id": "i", "name": "i", "status": "active"},
 		},
 	}
 	s.Server = httptest.NewServer(http.HandlerFunc(s.handle))
@@ -55,9 +69,9 @@ func (s *stubCloud) driver() *Driver {
 		}
 	}
 	return &Driver{
-		compute: client(), network: client(),
+		compute: client(), network: client(), image: client(),
 		region: "TEST-1", defaultNetwork: "Ext-Net",
-		netIDs: map[string]string{},
+		netIDs: map[string]string{}, flavorIDs: map[string]string{}, imageIDs: map[string]string{},
 	}
 }
 
@@ -84,6 +98,8 @@ func (s *stubCloud) handle(w http.ResponseWriter, r *http.Request) {
 		s.servers[id] = map[string]any{
 			"id": id, "name": body.Server["name"], "status": "BUILD",
 			"metadata": meta, "addresses": map[string]any{},
+			// Kept so a test can see what the driver actually asked Nova for.
+			"flavorRef": body.Server["flavorRef"], "imageRef": body.Server["imageRef"],
 			// Nova's create response famously omits "created"; the driver has
 			// to stamp its own or the reaper reads it as infinitely old.
 		}
@@ -137,6 +153,19 @@ func (s *stubCloud) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"output": s.console})
+
+	case r.Method == http.MethodGet && r.URL.Path == "/flavors/detail":
+		_ = json.NewEncoder(w).Encode(map[string]any{"flavors": s.flavors})
+
+	case r.Method == http.MethodGet && r.URL.Path == "/images":
+		name, status := r.URL.Query().Get("name"), r.URL.Query().Get("status")
+		out := []map[string]any{}
+		for _, img := range s.images {
+			if (name == "" || img["name"] == name) && (status == "" || img["status"] == status) {
+				out = append(out, img)
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"images": out})
 
 	case r.Method == http.MethodGet && r.URL.Path == "/networks":
 		name := r.URL.Query().Get("name")
@@ -392,5 +421,99 @@ func TestIsNotFound(t *testing.T) {
 	err = gophercloud.ErrUnexpectedResponseCode{Actual: http.StatusInternalServerError}
 	if isNotFound(err) {
 		t.Error("a 500 must not be mistaken for a 404")
+	}
+}
+
+// created returns what the last create request asked for, by field.
+func (s *stubCloud) created(field string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	v, _ := s.servers["srv-1"][field].(string)
+	return v
+}
+
+func provisionWith(t *testing.T, d *Driver, size, image map[string]any) error {
+	t.Helper()
+	_, err := d.Provision(context.Background(), cloud.ProvisionRequest{
+		Name: "rf-a", Owner: cloud.Owner{Controller: "rf-1", Pool: "p"},
+		SizeSpec: size, ImageSpec: image,
+		Bootstrap: cloud.Bootstrap{CloudInit: []byte("#cloud-config\n")},
+	})
+	return err
+}
+
+// A manifest names a flavor the way the catalogue does ("b3-8"); Nova wants
+// the id. This is what left a production pool failing every launch with
+// "Flavor b3-8 could not be found".
+func TestProvisionResolvesFlavorNameToID(t *testing.T) {
+	stub := newStubCloud(t)
+	d := stub.driver()
+	if err := provisionWith(t, d, map[string]any{"flavor": "b3-8"}, map[string]any{"id": "image-id"}); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	if got := stub.created("flavorRef"); got != "dc47c3a9-82b9-460f-80b4-475b5a550e9a" {
+		t.Errorf("Nova was asked for flavorRef %q, want the id of b3-8", got)
+	}
+	// Resolved once; the second launch must not list flavors again.
+	stub.mu.Lock()
+	stub.requests = nil
+	stub.mu.Unlock()
+	if err := provisionWith(t, d, map[string]any{"flavor": "b3-8"}, map[string]any{"id": "image-id"}); err != nil {
+		t.Fatalf("second provision: %v", err)
+	}
+	if stub.sawRequest("/flavors/detail") {
+		t.Error("the flavor name was looked up again instead of being cached")
+	}
+}
+
+func TestProvisionAcceptsOpaqueFlavorID(t *testing.T) {
+	stub := newStubCloud(t)
+	d := stub.driver()
+	// Not a UUID and not a name, but a real id on clouds that number flavors.
+	if err := provisionWith(t, d, map[string]any{"flavor": "3"}, map[string]any{"id": "image-id"}); err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	if got := stub.created("flavorRef"); got != "3" {
+		t.Errorf("flavorRef = %q, want 3", got)
+	}
+}
+
+func TestProvisionUnknownFlavorIsReported(t *testing.T) {
+	stub := newStubCloud(t)
+	d := stub.driver()
+	err := provisionWith(t, d, map[string]any{"flavor": "b3-9000"}, map[string]any{"id": "image-id"})
+	if err == nil || !strings.Contains(err.Error(), "b3-9000") {
+		t.Fatalf("err = %v, want one naming the missing flavor", err)
+	}
+	if stub.sawRequest("POST /servers") {
+		t.Error("a server was created for a flavor that does not exist")
+	}
+}
+
+// An image named rather than pinned by id keeps working after the provider
+// republishes it; only the active one counts.
+func TestProvisionResolvesImageNameToActiveID(t *testing.T) {
+	stub := newStubCloud(t)
+	d := stub.driver()
+	err := provisionWith(t, d, map[string]any{"flavor": "b3-8"}, map[string]any{"id": "Debian 12 - Docker"})
+	if err != nil {
+		t.Fatalf("provision: %v", err)
+	}
+	if got := stub.created("imageRef"); got != "22ef146b-0143-4d9b-9ca0-853e1c859990" {
+		t.Errorf("imageRef = %q, want the active Debian 12 - Docker id", got)
+	}
+}
+
+func TestProvisionImageNameNeedsGlance(t *testing.T) {
+	stub := newStubCloud(t)
+	d := stub.driver()
+	d.image = nil
+	err := provisionWith(t, d, map[string]any{"flavor": "b3-8"}, map[string]any{"id": "Debian 12 - Docker"})
+	if err == nil || !strings.Contains(err.Error(), "image service") {
+		t.Fatalf("err = %v, want a complaint about the missing image service", err)
+	}
+	// An id still works without Glance.
+	if err := provisionWith(t, d, map[string]any{"flavor": "b3-8"}, map[string]any{"id": "22ef146b-0143-4d9b-9ca0-853e1c859990"}); err != nil {
+		t.Fatalf("provision by id without Glance: %v", err)
 	}
 }
