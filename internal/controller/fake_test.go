@@ -192,6 +192,9 @@ type fakeForge struct {
 	runners      map[string]forge.Runner
 	jobs         []forge.Job
 	demandLabels []string // what the last Demand asked for
+	// stillQueued answers JobQueued for webhook jobs; absent means false.
+	stillQueued  map[string]bool
+	checks       int
 	nextID       int
 	listErr      error
 	provisionErr error
@@ -248,6 +251,14 @@ func (f *fakeForge) Bootstrap(cred *forge.Credential, _ cloud.CredentialMode, op
 	}, nil
 }
 
+// JobQueued makes the fake a forge.JobChecker, answering from stillQueued.
+func (f *fakeForge) JobQueued(_ context.Context, job forge.Job) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.checks++
+	return f.stillQueued[job.ID], nil
+}
+
 func (f *fakeForge) addRunner(r forge.Runner) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -270,4 +281,13 @@ func (f *fakeForge) lastDemandLabels() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.demandLabels...)
+}
+
+func (f *fakeForge) setQueued(ids ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stillQueued = map[string]bool{}
+	for _, id := range ids {
+		f.stillQueued[id] = true
+	}
 }

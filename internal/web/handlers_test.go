@@ -423,7 +423,9 @@ func TestForgeEditShowsWebhookURL(t *testing.T) {
 		"f_scope": {"repo"}, "f_owner": {"o"}, "f_repo": {"r"}, "f_token": {"t"},
 	})
 	rec := get(t, h, "/forges/1")
-	if !strings.Contains(rec.Body.String(), "https://rf.example.com/webhooks/1") {
+	// By name: a deployment managed as code knows the name, and it survives
+	// the database being rebuilt, which a numeric id does not.
+	if !strings.Contains(rec.Body.String(), "https://rf.example.com/webhooks/gh") {
 		t.Error("the forge page should show the webhook endpoint to register")
 	}
 }

@@ -160,6 +160,13 @@ func (c *Controller) reconcilePool(ctx context.Context, pool *store.Pool) error 
 	if err != nil {
 		return fmt.Errorf("demand: %w", err)
 	}
+	// Jobs the forge announced by webhook count too; at a scope with no queue
+	// to poll they are the only demand there is.
+	hooked, err := c.webhookDemand(ctx, pool.ForgeID, fg)
+	if err != nil {
+		c.log.Warn("webhook demand", "pool", pool.Name, "err", err)
+	}
+	jobs = mergeJobs(jobs, hooked)
 
 	plan := planScale(pool, matchingJobs(jobs, pool.Labels), live)
 	metrics.ScaleDecision(pool.Name, plan.queued, plan.uncovered, plan.atCeiling)
@@ -290,6 +297,78 @@ func matchingJobs(jobs []forge.Job, poolLabels []string) []forge.Job {
 			}
 		}
 		if ok {
+			out = append(out, j)
+		}
+	}
+	return out
+}
+
+// Webhook-announced jobs are trusted for this long before the forge is asked
+// whether they are still waiting, and are dropped outright at this age: a
+// delivery that reports a job finished can be missed, and a job that finished
+// elsewhere must not keep a machine launching for it.
+const (
+	webhookJobCheckAfter = 90 * time.Second
+	webhookJobMaxAge     = 2 * time.Hour
+	// webhookChecksPerPass bounds how many forge calls one pass spends on
+	// verification, so a burst of stale rows cannot stall the loop.
+	webhookChecksPerPass = 10
+)
+
+// webhookDemand returns the jobs a forge has announced by webhook, retiring
+// those the forge no longer reports as waiting.
+func (c *Controller) webhookDemand(ctx context.Context, forgeID uint, fg forge.Forge) ([]forge.Job, error) {
+	rows, err := c.db.WebhookJobs(ctx, forgeID)
+	if err != nil {
+		return nil, err
+	}
+	checker, canCheck := fg.(forge.JobChecker)
+	now := time.Now()
+	checks := 0
+	out := make([]forge.Job, 0, len(rows))
+	for i := range rows {
+		row := &rows[i]
+		job := forge.Job{ID: row.JobID, Labels: row.Labels, Repo: row.Repo, Ref: row.Ref, QueuedAt: row.QueuedAt}
+		age := now.Sub(row.ReceivedAt)
+		switch {
+		case age > webhookJobMaxAge:
+			c.log.Info("dropping a webhook job that aged out", "job", row.JobID, "age", age.Round(time.Second))
+			_ = c.db.DeleteWebhookJob(ctx, forgeID, row.JobID)
+			continue
+		case canCheck && checks < webhookChecksPerPass && age > webhookJobCheckAfter &&
+			(row.CheckedAt == nil || now.Sub(*row.CheckedAt) > webhookJobCheckAfter):
+			checks++
+			queued, err := checker.JobQueued(ctx, job)
+			if err != nil {
+				c.log.Warn("could not check a webhook job", "job", row.JobID, "err", err)
+				break
+			}
+			if !queued {
+				c.log.Info("webhook job is no longer waiting at the forge", "job", row.JobID)
+				_ = c.db.DeleteWebhookJob(ctx, forgeID, row.JobID)
+				continue
+			}
+			checked := now
+			c.db.WithContext(ctx).Model(row).Update("checked_at", &checked)
+		}
+		out = append(out, job)
+	}
+	return out, nil
+}
+
+// mergeJobs unions polled and webhook demand by job id, keeping the polled
+// entry when both have it.
+func mergeJobs(polled, hooked []forge.Job) []forge.Job {
+	if len(hooked) == 0 {
+		return polled
+	}
+	seen := make(map[string]bool, len(polled))
+	for _, j := range polled {
+		seen[j.ID] = true
+	}
+	out := polled
+	for _, j := range hooked {
+		if !seen[j.ID] {
 			out = append(out, j)
 		}
 	}

@@ -106,6 +106,9 @@ var (
 	credentialChecks = counter("credential_checks_total",
 		"Credential tests run from the console or the API, by outcome.",
 		"target", "name", "result")
+	webhookDeliveries = counter("webhook_deliveries_total",
+		"Inbound webhook deliveries, by forge, event and what became of them.",
+		"forge", "event", "result")
 
 	// The web UI and JSON API.
 	httpRequests = counter("http_requests_total",
@@ -233,6 +236,11 @@ func ForgeCall(name, kind, op string, d time.Duration, err error) {
 // CredentialCheck records a credential test. Target is "cloud" or "forge".
 func CredentialCheck(target, name string, err error) {
 	credentialChecks.WithLabelValues(target, name, result(err)).Inc()
+}
+
+// WebhookDelivery records one inbound webhook delivery and its outcome.
+func WebhookDelivery(forge, event, outcome string) {
+	webhookDeliveries.WithLabelValues(forge, event, outcome).Inc()
 }
 
 // HTTPRequest records one served request.

@@ -169,7 +169,12 @@ spec:
                   required: [name]
                   properties:
                     name: {type: string}
-                  description: A Secret holding the API token.
+                  description: >-
+                    A Secret holding the forge credential: a token key, or for
+                    a GitHub App the app_id, installation_id and private_key
+                    keys. A webhook_secret key, when present, is the secret
+                    the forge signs webhook deliveries with; it is kept apart
+                    from the credentials and enables POST /webhooks/<name>.
             status:
               type: object
               properties:

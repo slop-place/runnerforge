@@ -241,18 +241,20 @@ func (s *Server) Handler() http.Handler {
 
 	handler := s.auth.Middleware(mux)
 
-	// The scrape endpoint sits outside the sign-in gate rather than inside it.
-	// Prometheus cannot complete an authorization code flow, so a metrics path
-	// behind OIDC is a metrics path nothing can read; it has a bearer token of
-	// its own instead. Registering it on a mux in front of the gated one keeps
-	// that fact in one place, rather than as another exception the auth
-	// package has to know about.
+	// Two paths sit outside the sign-in gate rather than inside it, on a mux
+	// in front of the gated one so the exceptions live in one place rather
+	// than in the auth package. Webhook deliveries come from the forge, which
+	// cannot sign in and authenticates with an HMAC of its own. The scrape
+	// endpoint likewise: Prometheus cannot complete an authorization code
+	// flow, so a metrics path behind OIDC is a metrics path nothing can read;
+	// it has a bearer token of its own instead.
+	outer := http.NewServeMux()
+	outer.HandleFunc("POST /webhooks/{forge...}", s.webhook)
 	if h := metrics.Handler(s.cfg.Metrics, s.cfg.APITokens); h != nil {
-		outer := http.NewServeMux()
 		outer.Handle("GET "+s.cfg.Metrics.Route(), h)
-		outer.Handle("/", handler)
-		handler = outer
 	}
+	outer.Handle("/", handler)
+	handler = outer
 
 	// Timing wraps sign-in too, so a provider that has gone slow shows up as
 	// slow requests rather than as an unexplained drop in traffic.
@@ -724,7 +726,9 @@ func (s *Server) editForge(w http.ResponseWriter, r *http.Request) {
 	v.Fields = buildFields(impl.Fields, f.Settings, f.Credentials)
 	v.HasWebhookSecret = len(f.WebhookSecret) > 0
 	if s.cfg.BaseURL != "" {
-		v.WebhookURL = strings.TrimRight(s.cfg.BaseURL, "/") + "/webhooks/" + strconv.Itoa(int(f.ID))
+		// By name rather than id: the name is what a deployment managed as
+		// code knows, and it survives a database being rebuilt.
+		v.WebhookURL = strings.TrimRight(s.cfg.BaseURL, "/") + "/webhooks/" + f.Name
 	}
 	s.render(w, "forge_edit", v)
 }

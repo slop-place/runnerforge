@@ -98,7 +98,26 @@ func (c *instrumentedLogCloud) Logs(ctx context.Context, id string, tail int) (s
 
 // WrapForge returns f instrumented.
 func WrapForge(f forge.Forge) forge.Forge {
-	return &instrumentedForge{Forge: f, name: f.Name(), kind: string(f.Kind())}
+	w := &instrumentedForge{Forge: f, name: f.Name(), kind: string(f.Kind())}
+	// Same rule as the clouds: checking a webhook job is optional, and the
+	// wrapper only claims it when the forge underneath can do it.
+	if jc, ok := f.(forge.JobChecker); ok {
+		return &instrumentedCheckingForge{instrumentedForge: w, checker: jc}
+	}
+	return w
+}
+
+type instrumentedCheckingForge struct {
+	*instrumentedForge
+
+	checker forge.JobChecker
+}
+
+func (f *instrumentedCheckingForge) JobQueued(ctx context.Context, job forge.Job) (bool, error) {
+	start := time.Now()
+	queued, err := f.checker.JobQueued(ctx, job)
+	f.observe("check_job", start, err)
+	return queued, err
 }
 
 type instrumentedForge struct {

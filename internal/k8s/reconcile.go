@@ -25,6 +25,10 @@ const (
 	defaultMaxLifetimeSec = 7200
 )
 
+// webhookSecretKey is the Secret key that carries a forge's inbound webhook
+// secret rather than a credential for calling the forge.
+const webhookSecretKey = "webhook_secret"
+
 // managedName is the record name a cluster object maps to.
 //
 // Namespaced so two namespaces can each hold a "ci" pool without colliding in
@@ -268,6 +272,13 @@ func (r *Reconciler) reconcileForges(ctx context.Context) error {
 		f.Settings[managedByLabel] = managedValue
 		f.Credentials = store.Secret{}
 		maps.Copy(f.Credentials, creds)
+		// The webhook secret is not a forge credential but the one that
+		// authenticates the forge to us; it lives in its own column.
+		f.WebhookSecret = store.Secret{}
+		if ws := creds[webhookSecretKey]; ws != "" {
+			f.WebhookSecret = store.Secret{"secret": ws}
+			delete(f.Credentials, webhookSecretKey)
+		}
 
 		saveErr := r.db.WithContext(ctx).Save(&f).Error
 		metrics.K8sObject("Forge", saveErr)

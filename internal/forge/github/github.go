@@ -57,10 +57,24 @@ func init() {
 				Placeholder: DefaultRunnerImage,
 			},
 			{
-				Key: "token", Label: "Token", Type: cloud.FieldPassword,
-				Required: true, Secret: true,
-				Help: "A repo-scoped token is enough for the repo scope; an org scope " +
-					"needs admin:org.",
+				Key: "token", Label: "Token", Type: cloud.FieldPassword, Secret: true,
+				Help: "A personal access token: repo scope for one repository, admin:org " +
+					"for an organisation. Leave empty to authenticate as a GitHub App.",
+			},
+			{
+				Key: "app_id", Label: "App ID", Type: cloud.FieldText,
+				Help: "GitHub App authentication: the App's numeric id. Needs " +
+					"'Self-hosted runners: write' on the org (or repo 'Administration: " +
+					"write') and 'Actions: read'.",
+			},
+			{
+				Key: "installation_id", Label: "Installation ID", Type: cloud.FieldText,
+				Help: "The App's installation on this org or repo.",
+			},
+			{
+				Key: "private_key", Label: "App private key", Type: cloud.FieldPassword, Secret: true,
+				Help: "The App's PEM private key. Pasting it here is fine even though " +
+					"the field is one line.",
 			},
 		},
 	})
@@ -92,7 +106,8 @@ const (
 //	scope           "repo" or "org" (default "repo")
 //	owner           org or repository owner (required)
 //	repo            repository name, for repo scope
-//	token           PAT or installation token (required)
+//	token           personal access token; or instead of it:
+//	app_id, installation_id, private_key   GitHub App authentication
 //	runner_group_id runner group to place runners in (default 1, "Default")
 //	runner_image    container image for container-mode clouds
 func New(cfg map[string]any) (forge.Forge, error) {
@@ -103,8 +118,10 @@ func New(cfg map[string]any) (forge.Forge, error) {
 		base = "https://api.github.com"
 	}
 	token := get("token")
-	if token == "" {
-		return nil, errors.New("github: token is required")
+	appID, installationID, privateKey := get("app_id"), get("installation_id"), get("private_key")
+	usingApp, err := authMode(token, appID, installationID, privateKey)
+	if err != nil {
+		return nil, err
 	}
 	owner := get("owner")
 	if owner == "" {
@@ -140,17 +157,41 @@ func New(cfg map[string]any) (forge.Forge, error) {
 	}
 
 	h := http.Header{}
-	h.Set("Authorization", "Bearer "+token)
 	h.Set("Accept", "application/vnd.github+json")
 	h.Set("X-Github-Api-Version", "2022-11-28")
+	client := forge.NewClient(base, h)
+	if usingApp {
+		auth, err := newAppAuth(base, appID, installationID, privateKey)
+		if err != nil {
+			return nil, err
+		}
+		client.Auth = auth.Authorization
+	} else {
+		h.Set("Authorization", "Bearer "+token)
+	}
 
 	return &GitHub{
 		name:        get("name"),
 		scope:       scope,
 		group:       group,
-		client:      forge.NewClient(base, h),
+		client:      client,
 		runnerImage: img,
 	}, nil
+}
+
+// authMode decides between a token and a GitHub App from what was given, and
+// refuses a half-configured App or both at once.
+func authMode(token, appID, installationID, privateKey string) (bool, error) {
+	usingApp := appID != "" || installationID != "" || privateKey != ""
+	switch {
+	case token == "" && !usingApp:
+		return false, errors.New("github: token is required, or app_id, installation_id and private_key")
+	case usingApp && (appID == "" || installationID == "" || privateKey == ""):
+		return false, errors.New("github: App authentication needs app_id, installation_id and private_key together")
+	case usingApp && token != "":
+		return false, errors.New("github: give either token or App credentials, not both")
+	}
+	return usingApp, nil
 }
 
 // Name returns the operator-assigned name of this connection.
@@ -218,6 +259,24 @@ func (g *GitHub) Demand(ctx context.Context, labels []string) ([]forge.Job, erro
 		}
 	}
 	return out, nil
+}
+
+// JobQueued asks GitHub whether a job announced by webhook is still waiting.
+// The job's repository comes with the delivery, so this works at org scope
+// where there is no queue to list.
+func (g *GitHub) JobQueued(ctx context.Context, job forge.Job) (bool, error) {
+	if job.Repo == "" {
+		return false, errors.New("github: job has no repository to check it in")
+	}
+	var j wfJob
+	err := g.client.Do(ctx, http.MethodGet, "/repos/"+job.Repo+"/actions/jobs/"+url.PathEscape(job.ID), nil, &j)
+	if errors.Is(err, forge.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("github: check job %s: %w", job.ID, err)
+	}
+	return j.Status == "queued", nil
 }
 
 // ---- registration ----

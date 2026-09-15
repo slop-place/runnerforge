@@ -114,7 +114,7 @@ func poolSpec() map[string]any {
 
 func (f *fixture) createTrio(t *testing.T) {
 	t.Helper()
-	f.c.Secret(t, f.ns, "forge-token", map[string]string{"token": "t0k-secret"})
+	f.c.Secret(t, f.ns, "forge-token", map[string]string{"token": "t0k-secret", "webhook_secret": "hook-secret"})
 	f.c.Create(t, f.ns, "clouds", "dock", dockerCloudSpec())
 	f.c.Create(t, f.ns, "forges", "fj", forgejoForgeSpec("forge-token"))
 	f.c.Create(t, f.ns, "pools", "ci", poolSpec())
@@ -196,6 +196,14 @@ func TestKubernetesReconcileAppliesObjects(t *testing.T) {
 	}
 	if fg.Settings.String("scope") != "repo" || !k8s.Managed(fg.Settings) {
 		t.Errorf("forge settings = %v", fg.Settings)
+	}
+	// The webhook secret is ours to verify deliveries with, not a credential
+	// for calling the forge: it lands in its own column and nowhere else.
+	if fg.WebhookSecret["secret"] != "hook-secret" {
+		t.Errorf("forge webhook secret = %q, want the Secret's webhook_secret key", fg.WebhookSecret["secret"])
+	}
+	if _, leaked := fg.Credentials["webhook_secret"]; leaked {
+		t.Error("webhook_secret was also stored among the forge's credentials")
 	}
 
 	p := f.pool(t, f.qualified("ci"))

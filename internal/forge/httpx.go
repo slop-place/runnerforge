@@ -45,6 +45,10 @@ type Client struct {
 	HTTP    *http.Client
 	// Header is applied to every request; used for authorization.
 	Header http.Header
+	// Auth, when set, supplies the Authorization value per request, for
+	// forges whose credential is minted and expires (a GitHub App
+	// installation token). It overrides any Authorization in Header.
+	Auth func(ctx context.Context) (string, error)
 }
 
 // NewClient builds a client for a forge base URL.
@@ -76,6 +80,13 @@ func (c *Client) Do(ctx context.Context, method, path string, body, out any) err
 		for _, v := range vs {
 			req.Header.Add(k, v)
 		}
+	}
+	if c.Auth != nil {
+		authz, err := c.Auth(ctx)
+		if err != nil {
+			return fmt.Errorf("%s %s: authenticate: %w", method, url, err)
+		}
+		req.Header.Set("Authorization", authz)
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")

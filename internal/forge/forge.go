@@ -130,6 +130,17 @@ type Forge interface {
 	Bootstrap(cred *Credential, mode cloud.CredentialMode, opts BootstrapOptions) (cloud.Bootstrap, error)
 }
 
+// JobChecker is an optional Forge capability: confirming that a job the
+// controller learned about from a webhook is still waiting. A delivery can be
+// missed or arrive out of order, so a webhook-fed queue has to be reconciled
+// against the forge now and then, or a job that finished elsewhere would keep
+// a machine launching for it.
+type JobChecker interface {
+	// JobQueued reports whether the job is still waiting for a runner. A job
+	// the forge no longer knows about reports false with a nil error.
+	JobQueued(ctx context.Context, job Job) (bool, error)
+}
+
 // BootstrapOptions carries machine-side settings into the launch instructions.
 type BootstrapOptions struct {
 	// RunnerName is the name the runner registers under; matches Credential's request.

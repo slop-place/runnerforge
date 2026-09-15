@@ -147,6 +147,46 @@ func (d *DB) PoolByID(ctx context.Context, id uint) (*Pool, error) {
 	return &p, err
 }
 
+// ---- webhook jobs ----
+
+// RecordWebhookJob stores or refreshes a job announced by webhook.
+func (d *DB) RecordWebhookJob(ctx context.Context, j *WebhookJob) error {
+	var existing WebhookJob
+	err := d.WithContext(ctx).Where("forge_id = ? AND job_id = ?", j.ForgeID, j.JobID).First(&existing).Error
+	if err == nil {
+		j.ID = existing.ID
+		j.CheckedAt = nil
+	}
+	if err := d.WithContext(ctx).Save(j).Error; err != nil {
+		return fmt.Errorf("record webhook job %s: %w", j.JobID, err)
+	}
+	return nil
+}
+
+// DeleteWebhookJob forgets a job; a job never recorded is not an error.
+func (d *DB) DeleteWebhookJob(ctx context.Context, forgeID uint, jobID string) error {
+	err := d.WithContext(ctx).Where("forge_id = ? AND job_id = ?", forgeID, jobID).Delete(&WebhookJob{}).Error
+	if err != nil {
+		return fmt.Errorf("delete webhook job %s: %w", jobID, err)
+	}
+	return nil
+}
+
+// WebhookJobs returns the jobs a forge has announced and not yet retired.
+func (d *DB) WebhookJobs(ctx context.Context, forgeID uint) ([]WebhookJob, error) {
+	var out []WebhookJob
+	err := d.WithContext(ctx).Where("forge_id = ?", forgeID).Order("received_at").Find(&out).Error
+	return out, err
+}
+
+// ForgeByName finds a forge by its unique name, which is what a webhook URL
+// carries: names are stable across deployments in a way database ids are not.
+func (d *DB) ForgeByName(ctx context.Context, name string) (*Forge, error) {
+	var f Forge
+	err := d.WithContext(ctx).Where("name = ?", name).First(&f).Error
+	return &f, err
+}
+
 // ---- instances ----
 
 // LiveInstances returns instances in a pool that still hold resources, i.e.

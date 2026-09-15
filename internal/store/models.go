@@ -380,9 +380,28 @@ type Event struct {
 	Message    string    `json:"message"`
 }
 
+// WebhookJob is a job a forge announced by webhook and that has not been
+// reported finished since. It is the demand signal for forges with no queue
+// to poll (GitHub at organisation scope), and is merged with polled demand
+// everywhere else. Rows are removed when the forge reports the job started
+// or finished, when a check against the forge finds it gone, or on age.
+type WebhookJob struct {
+	ID      uint   `gorm:"primarykey" json:"id"`
+	ForgeID uint   `gorm:"uniqueIndex:idx_webhook_job;not null" json:"forge_id"`
+	JobID   string `gorm:"uniqueIndex:idx_webhook_job;not null" json:"job_id"`
+
+	Labels StringList `gorm:"type:text" json:"labels"`
+	Repo   string     `json:"repo"`
+	Ref    string     `json:"ref"`
+
+	QueuedAt   time.Time  `json:"queued_at"`
+	ReceivedAt time.Time  `gorm:"index" json:"received_at"`
+	CheckedAt  *time.Time `json:"checked_at"`
+}
+
 // AllModels is the migration set.
 func AllModels() []any {
 	return []any{
-		&Cloud{}, &Size{}, &Image{}, &Forge{}, &Pool{}, &Instance{}, &Event{},
+		&Cloud{}, &Size{}, &Image{}, &Forge{}, &Pool{}, &Instance{}, &Event{}, &WebhookJob{},
 	}
 }

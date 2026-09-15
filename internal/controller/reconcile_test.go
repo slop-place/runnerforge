@@ -563,3 +563,81 @@ func TestRunKeepsGoingAfterAFailedPass(t *testing.T) {
 		t.Errorf("Run returned %v; it should have kept going until the deadline", err)
 	}
 }
+
+// hook records a webhook-announced job for the harness's forge.
+func hook(t *testing.T, h *harness, id string, age time.Duration, labels ...string) {
+	t.Helper()
+	err := h.db.RecordWebhookJob(context.Background(), &store.WebhookJob{
+		ForgeID: h.pool.ForgeID, JobID: id, Labels: store.StringList(labels),
+		Repo: "acme/widgets", ReceivedAt: time.Now().Add(-age),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A job the forge announced by webhook is demand like any other: at a scope
+// with no queue to poll it is the only demand there is.
+func TestReconcileLaunchesForWebhookJob(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	hook(t, h, "wh1", 0, "linux")
+
+	if err := h.ctrl.ReconcileAll(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := h.cloud.count(); got != 1 {
+		t.Fatalf("launched %d machines for a webhook job, want 1", got)
+	}
+	live, _ := h.db.LiveInstances(ctx, h.pool.ID)
+	if len(live) != 1 || live[0].JobID != "wh1" {
+		t.Fatalf("machine not bound to the webhook job: %+v", live)
+	}
+	// The same job also polled is one job, not two.
+	h.forge.setJobs(forge.Job{ID: "wh1", Labels: []string{"linux"}})
+	if err := h.ctrl.ReconcileAll(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if got := h.cloud.count(); got != 1 {
+		t.Errorf("a job seen by both webhook and poll launched %d machines, want 1", got)
+	}
+}
+
+// A delivery that reports a job finished can be missed. After a grace period
+// the forge is asked, and a job it no longer reports as waiting is dropped
+// rather than kept launching machines for it.
+func TestWebhookJobsAreVerifiedAgainstTheForge(t *testing.T) {
+	h := newHarness(t)
+	ctx := context.Background()
+	hook(t, h, "fresh", 0, "linux")             // too young to check
+	hook(t, h, "gone", 5*time.Minute, "linux")  // forge says it is not queued
+	hook(t, h, "still", 5*time.Minute, "linux") // forge says it is
+	hook(t, h, "ancient", 3*time.Hour, "linux") // past the maximum age
+	h.forge.setQueued("still")
+
+	if err := h.ctrl.ReconcileAll(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	rows, _ := h.db.WebhookJobs(ctx, h.pool.ForgeID)
+	ids := make([]string, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, r.JobID)
+	}
+	if got := strings.Join(ids, ","); got != "still,fresh" && got != "fresh,still" {
+		t.Errorf("rows after verification = %v, want fresh and still only", ids)
+	}
+	if h.forge.checks != 2 {
+		t.Errorf("forge was asked %d times, want 2 (gone and still; fresh is too young, ancient is dropped unasked)", h.forge.checks)
+	}
+	// Machines were launched for the two live jobs only.
+	if got := h.cloud.count(); got != 2 {
+		t.Errorf("launched %d machines, want 2", got)
+	}
+	// A verified job is not re-asked on the very next pass.
+	if err := h.ctrl.ReconcileAll(ctx); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if h.forge.checks != 2 {
+		t.Errorf("forge was asked again immediately after a verification: %d checks", h.forge.checks)
+	}
+}

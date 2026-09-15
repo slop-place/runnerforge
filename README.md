@@ -60,7 +60,8 @@ the per-forge gotchas that shaped it.
 | Kubernetes CRDs | working, verified end to end against a real cluster |
 | Prometheus metrics | working |
 | Hetzner, DigitalOcean, Kubernetes drivers | not started |
-| Webhook ingestion (push instead of polling) | not started |
+| Webhook ingestion (GitHub `workflow_job`, HMAC-verified) | working |
+| GitHub App authentication | working |
 
 ## Testing
 
@@ -222,6 +223,26 @@ as read-only in the UI. Anything created through the UI or the API is left
 alone, so both ways of working coexist in one deployment. A pool deleted from
 the cluster whose machines are still running is kept until they finish — the
 reaper finds them by the pool name written on them.
+
+### GitHub at organisation scope
+
+GitHub has no organisation-wide queue to poll, so an org-scoped forge learns
+about work from the `workflow_job` webhook. Set a webhook secret on the forge
+(the `webhook_secret` key of its Secret, or the field on its page) and
+register `https://<base_url>/webhooks/<forge name>` with GitHub, subscribed
+to *Workflow jobs*. Deliveries are verified against the secret; a forge
+without one has no endpoint. A queued job is demand until GitHub reports it
+started or finished; because a delivery can be missed, jobs older than ninety
+seconds are checked against GitHub and dropped when no longer queued.
+
+Repository-scoped forges poll as well, and the two sources are merged by job
+id, so a webhook there only lowers latency.
+
+Authenticate as a GitHub App rather than with a personal token: give the
+forge `app_id`, `installation_id` and `private_key` instead of `token`, and
+runnerforge mints installation tokens as it needs them. The App needs
+*Self-hosted runners: read and write* on the organisation (or *Administration:
+read and write* on a repository) and *Actions: read* for the job checks.
 
 ### Protecting the console
 
